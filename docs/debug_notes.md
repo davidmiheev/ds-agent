@@ -97,6 +97,15 @@ the same symptoms.
   silently never set. Now `resume=_sdk_session_id(workspace)` = newest
   transcript's stem.
 
+## Git / network
+
+- **SSH to GitHub fails over IPv6** on this box: `git push` dies with
+  `Connection closed by 64:ff9b::8c52:7903 port 22` (the IPv6 route is
+  black-holed). Fix: force IPv4 —
+  `git -c core.sshCommand="ssh -4" push -u github main`.
+- The dead SOCKS proxy (`ALL_PROXY=socks5://127.0.0.1:1080`) also breaks
+  plain `curl` — use `curl --noproxy '*'`.
+
 ## Server startup gotchas
 
 - `app.py` resolves `static/` and `templates/` relative to `__file__`
