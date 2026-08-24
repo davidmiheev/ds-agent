@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "timeout": 15000
+    },
+    "colab": {
+      "command": "/tmp/colab-mcp/.venv-313/bin/colab-mcp",
+      "args": [],
+      "timeout": 120000,
+      "env": {
+        "PYTHONPATH": "/tmp/colab-mcp/.venv-313/lib/python3.13/site-packages",
+        "GOOGLE_OAUTH_CLIENT_ID":     "${VAULT:google_oauth_client_id}",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "${VAULT:google_oauth_client_secret}",
+        "GOOGLE_OAUTH_REFRESH_TOKEN": "${VAULT:google_oauth_refresh_token}"
+      }
+    }
+  }
+}

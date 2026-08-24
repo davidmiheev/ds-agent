@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+      "timeout": 15000
+    },
+    "colab": {
+      "command": "/workspace/coding-agent/.venv-313/bin/python",
+      "args": ["-m", "colab_mcp.colab_server"],
+      "timeout": 120000,
+      "env": {
+        "PYTHONPATH": "/workspace/coding-agent/src",
+        "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt"
+      }
+    },
+    "research": {
+      "command": "/workspace/coding-agent/.venv-313/bin/python",
+      "args": ["-m", "research_mcp.server"],
+      "timeout": 30000,
+      "env": {
+        "PYTHONPATH": "/workspace/coding-agent/src",
+        "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt"
+      }
+    }
+  }
+}

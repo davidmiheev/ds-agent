@@ -1,0 +1,60 @@
+# TODO
+
+Current state as of 2026-08-25, right after the repo restructure
+(tests → `tests/`, sources → `src/`, docs → `docs/`, `scripts/run_server.sh`).
+
+## Done ✅
+
+- FastAPI web UI (chat + terminal + session sidebar + file browser), no build step
+- BYOK key storage (Fernet-encrypted via `APP_PASSWORD`, plaintext fallback)
+- Provider env injection (Anthropic / OpenRouter / generic gateway)
+- Per-session `.mcp.json` composition with `${VAULT:...}` resolution
+- filesystem MCP (npx), colab MCP (custom wrapper, OAuth via google-colab-cli's
+  public client), research MCP (12 tools) — all three verified end-to-end
+  (transcripts in `tests/*_end_to_end_test.txt`)
+- Artifact inlining (`__ARTIFACT__` markers → images / download links)
+- Tool-result trimming with `.truncated/` pointer files
+- Per-turn usage/cost tracking + cache stats, context bar, manual + auto compact
+- Session resume from saved transcripts; interrupt button
+- Repo restructure: `src/` layout, `tests/`, `docs/`, `scripts/run_server.sh` (port 8765)
+- History persistence across tab refresh: `GET /v1/sessions/{sid}/history`
+  rebuilds the chat from the on-disk SDK transcript (artifacts re-embedded);
+  active session survives reload via URL hash + sessionStorage. Also fixed
+  the broken `resume=` wiring (was passing our sid / checking a legacy
+  transcript path — now uses the SDK session UUID from the transcript).
+
+## Open
+
+### High priority
+- [x] `deploy/Caddyfile` was referenced in README but missing — recreated
+      during the restructure (reverse proxy → 127.0.0.1:8765).
+- [ ] **`SESSION_BACKEND=docker` is declared in `core.py` but not implemented** —
+      only `local` (bare subprocess) works. Either implement per-session
+      containers or remove the env var.
+- [ ] **`can_use_tool` gating for public mode** — comments in `core.py` /
+      `sessions.py` promise hardened tool approvals when `APP_PUBLIC=1`, but
+      `_spawn` always uses `permission_mode="bypassPermissions"`. Must be fixed
+      before exposing on a public host.
+- [ ] **`mcp.json` contains sandbox-specific paths** (`/workspace/coding-agent`,
+      `/etc/ssl/certs/agent-identity/...`) — regenerate for this machine or
+      document that it's per-host config (the real registry lives at
+      `~/.coding-agent/mcp.json`).
+
+### Medium
+- [ ] Tests in `tests/` are ad-hoc scripts (plain `asyncio.run(main())`), not
+      pytest — convert to pytest with a fixture that boots the server on a
+      random port; they currently hardcode `127.0.0.1:8765`.
+- [ ] `test_colab_mcp_server.py` prefers `.venv-313/bin/python`, which is an
+      empty venv on this machine — decide on the canonical colab venv
+      (`src/colab_mcp/.venv` via `setup.sh`) and update the fallback order.
+- [x] README quick start updated to `bash scripts/run_server.sh`
+      (module path `ds_agent.app:app`, port 8765).
+- [ ] `mcp.json.example` still shows the old proxy-mode colab server with
+      vault OAuth keys — update to the new `colab_mcp.colab_server` wrapper.
+- [x] `.gitignore` added (`.venv*`, `__pycache__`, `.env`).
+
+### Low / ideas
+- [ ] Session export (transcript → markdown)
+- [ ] Multi-session concurrency guard UI (currently second WS just fails)
+- [ ] Rate limiting / audit log for `APP_PUBLIC` mode
+- [ ] Move `tests/*.txt` transcripts under `tests/transcripts/`

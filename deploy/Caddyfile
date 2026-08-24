@@ -1,0 +1,5 @@
+# Reverse proxy for the public-host case. Caddy handles auto-TLS.
+# Replace coding.yourdomain.com with your real domain (DNS must point here).
+coding.yourdomain.com {
+	reverse_proxy 127.0.0.1:8765
+}

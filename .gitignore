@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.venv-*/
+src/colab_mcp/.venv/
+
+# Secrets / local config
+.env
+
+# uv
+.uv/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

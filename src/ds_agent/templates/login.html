@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Login — Coding Agent{% endblock %}
+{% block body %}
+<main class="login">
+  <form method="post" action="/login" class="card">
+    <h1>Coding Agent</h1>
+    <p class="muted">enter password</p>
+    {% if error %}<p class="err">{{ error }}</p>{% endif %}
+    <input type="password" name="password" autofocus autocomplete="current-password" />
+    <button type="submit">sign in</button>
+  </form>
+</main>
+{% endblock %}

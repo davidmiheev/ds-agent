@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Settings — Coding Agent{% endblock %}
+{% block body %}
+<main class="settings" x-data="settingsApp()" x-init="init()">
+  <header>
+    <a href="/" class="back">← back</a>
+    <h1>settings</h1>
+  </header>
+
+  <section class="card">
+    <h2>BYOK keys</h2>
+    <p class="muted small">
+      Stored encrypted at <code>~/.coding-agent/keys.enc</code>.
+      Encryption key is derived from your <code>APP_PASSWORD</code> env var.
+      {% if not public_mode %}
+      <strong>Tip:</strong> set <code>APP_PASSWORD</code> in your <code>.env</code> so keys can be encrypted at rest.
+      {% endif %}
+    </p>
+
+    <form @submit.prevent="saveKey()">
+      <label>provider
+        <select x-model="form.provider">
+          <option value="openrouter">openrouter (Anthropic-compatible)</option>
+          <option value="anthropic">anthropic (direct)</option>
+          <option value="custom">custom (bring your own base URL)</option>
+        </select>
+      </label>
+      <label>label <input x-model="form.label" placeholder="work" /></label>
+      <label>base URL <input x-model="form.base_url" placeholder="optional, for openrouter leave blank, for custom provide" /></label>
+      <label>API key <input x-model="form.key" type="password" placeholder="sk-..." /></label>
+      <button type="submit">save key</button>
+    </form>
+
+    <h3>stored</h3>
+    <ul class="keys">
+      <template x-for="k in providers" :key="k.provider">
+        <li>
+          <code x-text="k.provider"></code>
+          <span class="muted" x-text="k.label || ''"></span>
+          <span class="muted small" x-text="k.base_url || ''"></span>
+          <button class="ghost danger" @click="del(k.provider)">delete</button>
+        </li>
+      </template>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>MCP config</h2>
+    <p class="muted small">
+      Edit <code>~/.coding-agent/mcp.json</code> directly. Secret placeholders like
+      <code>${VAULT:google_oauth_refresh_token}</code> are resolved at session start.
+    </p>
+    <textarea x-model="mcpRaw" rows="14" spellcheck="false"></textarea>
+    <button @click="saveMcp()">save mcp.json</button>
+  </section>
+</main>
+<script>
+function settingsApp() {
+  return {
+    providers: [],
+    mcpRaw: `{{ mcp_config | e }}`,
+    form: { provider: 'openrouter', label: '', base_url: '', key: '' },
+    async init() {
+      this.providers = await fetch('/v1/keys').then(r => r.json());
+    },
+    async saveKey() {
+      const r = await fetch('/v1/keys', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(this.form),
+      });
+      if (r.ok) {
+        this.form.key = '';
+        this.providers = await fetch('/v1/keys').then(r => r.json());
+      } else {
+        alert(await r.text());
+      }
+    },
+    async del(provider) {
+      await fetch(`/v1/keys/${provider}`, { method: 'DELETE' });
+      this.providers = await fetch('/v1/keys').then(r => r.json());
+    },
+    async saveMcp() {
+      const r = await fetch('/v1/mcp', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ raw: this.mcpRaw }),
+      });
+      if (!r.ok) alert(await r.text());
+    },
+  };
+}
+</script>
+{% endblock %}

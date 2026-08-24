@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Coding Agent{% endblock %}
+{% block body %}
+<div x-data="chatApp()" x-init="init()" class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <strong>coding agent</strong>
+      <a href="/settings" class="icon" title="settings">⚙</a>
+    </div>
+    <button class="new" @click="newSession()">+ new session</button>
+    <div class="session-list" id="session-list">
+      {% for s in sessions %}
+      <div class="session-item" data-id="{{ s.id }}" :class="{active: currentId==='{{s.id}}'}"
+           @click="open('{{s.id}}')">
+        <span class="title">{{ s.title }}</span>
+        <span class="muted small">{{ s.model }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="footer">
+      <button class="ghost" @click="document.cookie='sid=; Max-Age=0; path=/'; location.href='/login'">logout</button>
+    </div>
+  </aside>
+
+  <main class="chat" x-show="currentId" x-cloak>
+    <header class="chat-header">
+      <div>
+        <span class="dot" :class="{on: connected}"></span>
+        <span x-text="title || '(no session)'"></span>
+      </div>
+      <div class="actions">
+        <div class="ctx-bar" @click="compact()" :title="`context ${contextPct}% full — click to compact`">
+          <div class="ctx-fill" :style="`width:${contextPct}%`"></div>
+          <span class="ctx-label" x-text="`ctx ${contextPct}%`"></span>
+        </div>
+        <span class="muted small" x-text="model"></span>
+        <button class="ghost" @click="interrupt()" :disabled="!busy">stop</button>
+        <button class="ghost danger" @click="deleteCurrent()">delete</button>
+      </div>
+    </header>
+
+    <section class="messages" id="messages">
+      <template x-for="(m, i) in messages" :key="i">
+        <div :class="['msg', m.role]">
+          <div class="role" x-text="m.role"></div>
+          <div class="body" x-html="m.html"></div>
+        </div>
+      </template>
+      <div x-show="busy" class="msg assistant thinking">
+        <div class="role">assistant</div>
+        <div class="body"><span class="spinner"></span> working…</div>
+      </div>
+    </section>
+
+    <footer class="composer">
+      <textarea x-model="input" @keydown.enter.exact.prevent="send()"
+                placeholder="ask the agent… (shift+enter for newline)" rows="3"></textarea>
+      <button @click="send()" :disabled="!canSend">send</button>
+    </footer>
+  </main>
+
+  <aside class="files" x-show="currentId" x-cloak>
+    <div class="brand">workspace</div>
+    <div class="path" x-text="workspace"></div>
+    <ul class="file-list">
+      <template x-for="f in files" :key="f.path">
+        <li>
+          <a :href="`/v1/sessions/${currentId}/files/raw?path=${encodeURIComponent(f.path)}`"
+             target="_blank" x-text="f.path"></a>
+          <span class="muted small" x-text="fmtSize(f.size)"></span>
+        </li>
+      </template>
+    </ul>
+  </aside>
+
+  <!-- Picker modal: new session -->
+  <div class="modal" x-show="showPicker" x-cloak @keydown.escape.window="pickerCancel()">
+  <div class="modal-box" @click.outside="pickerCancel()">
+    <h3>new session</h3>
+    <label>provider
+      <select x-model="pickerProvider" @change="pickerModel = (pickerProviders[pickerProvider]||[])[0]?.id || ''">
+        <template x-for="(items, prov) in pickerProviders" :key="prov">
+          <option :value="prov" x-text="prov"></option>
+        </template>
+      </select>
+    </label>
+    <label>model
+      <select x-model="pickerModel">
+        <template x-for="m in (pickerProviders[pickerProvider] || [])" :key="m.id">
+          <option :value="m.id" x-text="`${m.label}  (${m.tag || 'model'})`"></option>
+        </template>
+      </select>
+    </label>
+    <label>or type a custom id
+      <input type="text" x-model="pickerModel" placeholder="provider/model-id" />
+    </label>
+    <div class="modal-actions">
+      <button class="ghost" @click="pickerCancel()">cancel</button>
+      <button @click="pickerConfirm()">create</button>
+    </div>
+  </div>
+  </div>
+</div>
+
+<script src="{{ asset('app.js') }}"></script>
+{% endblock %}
+
