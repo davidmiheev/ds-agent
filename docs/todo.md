@@ -40,6 +40,15 @@ Current state as of 2026-08-25, right after the repo restructure
   `docs/debug_notes.md` (hung OpenRouter model call, not an MCP tool).
 - `__ARTIFACT__` markers in assistant text (not just tool stdout) are now
   rewritten server-side and rendered as links/images in the chat (live + history).
+- Colab MCP production hardening: `colab_server.py` + `research_mcp/server.py`
+  strip inherited `*_PROXY` env vars at startup so Google/academic API calls
+  don't hit the dead `socks5://127.0.0.1:1080` proxy (InvalidSchema: no socksio).
+  Verified end-to-end through the live server (`colab_status` → "No active session").
+- `research_mcp` migrated from the MCP 1.x decorator API to the 2.x API
+  (`MCPServer` + `@server.tool`) to match the main `.venv`'s mcp 2.x; tool names
+  unchanged. (colab_mcp stays on 1.x in its own venv, pinned `mcp[cli]<2`.)
+- Colab one-time OAuth helper: `src/colab_mcp/auth_once.py` (standalone, reuses
+  colab-cli's public OAuth client); token at `~/.config/colab-cli/token.json`.
 
 ## Open
 
