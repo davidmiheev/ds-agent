@@ -63,12 +63,15 @@ _free_port() {
     if command -v ss >/dev/null 2>&1; then
         # ss -ltnp: listening, numeric, show process. Match ":<port>" in the
         # local-address column. -H hides the header line.
+        # `|| true`: a free port means grep finds no match (exit 1); without
+        # this, `set -euo pipefail` would abort the whole script on the
+        # common case where the port is already free.
         pids="$(ss -ltnpH 2>/dev/null \
             | awk -v p=":$port" '$4 ~ p"$" {print $0}' \
-            | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)"
+            | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u || true)"
     fi
     if [ -z "$pids" ] && command -v lsof >/dev/null 2>&1; then
-        pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u)"
+        pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u || true)"
     fi
     if [ -z "$pids" ] && [ -d /proc ]; then
         # /proc fallback: parse the inode of the listening socket, then find
@@ -87,7 +90,7 @@ _free_port() {
                 fi
             done
         done
-        pids="$(echo "$pids" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')"
+        pids="$(echo "$pids" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ' || true)"
     fi
 
     # Nothing found → port is free (or we can't see it); nothing to do.
