@@ -108,7 +108,7 @@ function chatApp() {
           if (m.role === 'user') {
             this.messages.push({ role: 'user', html: this._renderMd(m.content) });
           } else if (m.role === 'assistant') {
-            this.messages.push({ role: 'assistant', html: this._renderMd(m.content) });
+            this.messages.push({ role: 'assistant', html: expandArtifacts(this._renderMd(m.content)) });
           } else if (m.role === 'thinking') {
             this.messages.push({ role: 'assistant', html: this._renderMd('> ' + m.content + '\n\n'), thinking: true });
           } else if (m.role === 'tool') {
@@ -171,6 +171,18 @@ function chatApp() {
       if (f.type === 'system') {
         const sub = f.subtype || '';
         if (sub === 'init') { this.title = f.title || this.title; }
+        if (sub === 'watchdog' && f.message) {
+          this._appendSystem(`⚠ ${f.message}`);
+        }
+        return;
+      }
+
+      // Error frames: clear busy state so the UI doesn't stay stuck on "working…"
+      if (f.type === 'error' || f.type === 'reader_error') {
+        this.busy = false;
+        this._activeAssistantIdx = -1;
+        this._activeToolIdx = -1;
+        this._appendSystem(`⚠ ${f.message || 'unknown error'}`);
         return;
       }
 
@@ -234,7 +246,7 @@ function chatApp() {
       }
       const m = this.messages[this._activeAssistantIdx];
       m._raw = (m._raw || '') + (opts.thinking ? '> ' + text : text);
-      m.html = this._renderMd(m._raw);
+      m.html = expandArtifacts(this._renderMd(m._raw));
       this._scrollDown();
       this._enhanceCodeBlocks();
     },
@@ -266,7 +278,11 @@ function chatApp() {
       if (!window.marked) return escapeHtml(text);
       try {
         const dirty = marked.parse(text, { breaks: true, gfm: true });
-        return DOMPurify.sanitize(dirty, { ADD_TAGS: ['img', 'svg', 'path', 'button'], ADD_ATTR: ['src', 'alt', 'class', 'target', 'href', 'download', 'title', 'rel'] });
+        return DOMPurify.sanitize(dirty, {
+          ADD_TAGS: ['img', 'svg', 'path', 'button'],
+          ADD_ATTR: ['src', 'alt', 'class', 'target', 'href', 'download', 'title', 'rel',
+                     'data-kind', 'data-mime', 'data-name', 'data-path', 'data-b64'],
+        });
       } catch (e) {
         return escapeHtml(text);
       }
@@ -394,6 +410,8 @@ function b64toBlob(b64Data, contentType) {
 
 // Server emits <div class="artifact" data-kind="..." data-mime="..." data-name="..." data-path="..." data-b64="..."></div>
 // Expand them into actual <img> or interactive file card elements with Blob URLs that open in the browser.
+// Blob URLs are cached per path so re-renders (streaming text accumulation) don't leak object URLs.
+const _blobUrlCache = new Map();
 function expandArtifacts(html) {
   const tmpl = document.createElement('template');
   tmpl.innerHTML = html;
@@ -402,6 +420,7 @@ function expandArtifacts(html) {
     const mime = div.dataset.mime || 'text/plain';
     const name = div.dataset.name || 'file';
     const b64  = div.dataset.b64 || '';
+    const path = div.dataset.path || name;
     
     let node;
     if (mime.startsWith('image/')) {
@@ -415,8 +434,12 @@ function expandArtifacts(html) {
       cap.textContent = `${name} (${kind})`;
       node.append(img, cap);
     } else {
-      const blob = b64toBlob(b64, mime);
-      const blobUrl = URL.createObjectURL(blob);
+      let blobUrl = _blobUrlCache.get(path);
+      if (!blobUrl) {
+        const blob = b64toBlob(b64, mime);
+        blobUrl = URL.createObjectURL(blob);
+        _blobUrlCache.set(path, blobUrl);
+      }
       node = document.createElement('div');
       node.className = 'artifact-file-card';
       

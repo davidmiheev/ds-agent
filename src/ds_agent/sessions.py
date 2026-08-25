@@ -29,6 +29,10 @@ class ActiveSession:
     client: ClaudeSDKClient
     in_use: bool = False
     pending_steer: asyncio.Queue = field(default_factory=asyncio.Queue)
+    # True while a turn is in flight (set by the steer pump, cleared on the
+    # result frame). The stream watchdog is only armed while this is set, so
+    # idle time between turns never triggers a false timeout.
+    turn_active: bool = False
 
 
 def _new_id() -> str:
@@ -95,8 +99,8 @@ async def get_or_start(sid: str) -> ActiveSession:
         return active
 
 
-async def _spawn(row: dict) -> ActiveSession:
-    """Render the session dir and spawn a ClaudeSDKClient subprocess."""
+async def _spawn_client(row: dict) -> ClaudeSDKClient:
+    """Create and connect a ClaudeSDKClient for the given session row."""
     from . import crypto
     stored = crypto.load_key(row["provider"])
     if not stored:
@@ -126,7 +130,13 @@ async def _spawn(row: dict) -> ActiveSession:
     )
     client = ClaudeSDKClient(opts)
     await client.connect()
-    return ActiveSession(session_id=row["id"], db_row=row, workspace=workspace, client=client)
+    return client
+
+
+async def _spawn(row: dict) -> ActiveSession:
+    """Render the session dir and spawn a ClaudeSDKClient subprocess."""
+    client = await _spawn_client(row)
+    return ActiveSession(session_id=row["id"], db_row=row, workspace=Path(row["workspace"]), client=client)
 
 
 def _has_transcript(sid: str) -> bool:
@@ -176,7 +186,8 @@ def load_history(sid: str) -> dict:
     row = db.get_session(sid)
     if not row:
         raise KeyError(sid)
-    tp = _latest_transcript(Path(row["workspace"]))
+    workspace = Path(row["workspace"])
+    tp = _latest_transcript(workspace)
     messages: list[dict] = []
     if tp:
         for line in tp.read_text().splitlines():
@@ -197,7 +208,7 @@ def load_history(sid: str) -> dict:
                         if isinstance(b, dict) and b.get("type") == "tool_result":
                             inner = b.get("content")
                             if isinstance(inner, str):
-                                inner = rewrite_tool_result_content(inner)
+                                inner = rewrite_tool_result_content(inner, workspace=workspace)
                             messages.append({"role": "tool-result", "content": inner})
             elif t == "assistant":
                 c = (e.get("message") or {}).get("content")
@@ -207,7 +218,7 @@ def load_history(sid: str) -> dict:
                             continue
                         bt = b.get("type")
                         if bt == "text" and b.get("text", "").strip():
-                            messages.append({"role": "assistant", "content": b["text"]})
+                            messages.append({"role": "assistant", "content": rewrite_tool_result_content(b["text"], workspace=workspace)})
                         elif bt == "thinking" and b.get("thinking", "").strip():
                             messages.append({"role": "thinking", "content": b["thinking"]})
                         elif bt == "tool_use":
@@ -280,6 +291,42 @@ async def interrupt(active: ActiveSession) -> None:
         pass
 
 
+def client_alive(active: ActiveSession) -> bool:
+    """True if the SDK client's CLI subprocess is still running.
+
+    After an interrupt that kills the CLI (or a crash), the in-memory client
+    is a zombie: query()/interrupt() raise or hang. The transport keeps the
+    anyio Process at transport._process.
+    """
+    try:
+        transport = getattr(active.client, "_transport", None)
+        proc = getattr(transport, "_process", None) if transport else None
+        if proc is None:
+            return False
+        return proc.returncode is None
+    except Exception:
+        return False
+
+
+async def respawn(active: ActiveSession) -> None:
+    """Replace a dead SDK client with a fresh one (resuming the transcript).
+
+    Called when the CLI subprocess has exited (interrupt that killed it, or a
+    crash) so the next user message starts a clean process instead of writing
+    into a dead pipe.
+    """
+    try:
+        await active.client.disconnect()
+    except Exception:
+        pass
+    try:
+        active.client = await _spawn_client(active.db_row)
+    except Exception:
+        # If respawn fails, drop the session so get_or_start() retries cleanly.
+        _active.pop(active.session_id, None)
+        raise
+
+
 async def get_context_usage(active: ActiveSession) -> dict:
     """Return the SDK's context-usage breakdown (for the UI's 'X% of context used').
 
@@ -312,24 +359,82 @@ async def stream_events(active: ActiveSession) -> Any:
     """Async generator over SDK messages, with tool-result content rewriting.
 
     Each yielded item is a dict ready to JSON-serialize for the WebSocket.
+
+    This generator is long-lived: it survives across multiple turns (the SDK
+    stream stays open; each query() produces a result frame but the stream
+    continues). A watchdog detects hung turns (model call or MCP tool that
+    never responds) and attempts recovery via interrupt → respawn.
     """
-    from claude_agent_sdk import (  # type: ignore
-        AssistantMessage, UserMessage, SystemMessage, ResultMessage,
-    )
     sender = asyncio.create_task(_steer_pump(active))
+    q: asyncio.Queue = asyncio.Queue()
+
+    async def _pump():
+        """Read SDK messages into a queue so the main loop can apply timeouts."""
+        try:
+            async for msg in active.client.receive_messages():
+                await q.put(msg)
+        except Exception as e:
+            await q.put(e)
+        finally:
+            await q.put(None)  # sentinel: stream ended
+
+    pump_task = asyncio.create_task(_pump())
     try:
-        async for msg in active.client.receive_messages():
-            payload = _serialize(msg)
+        while True:
+            # Wait for the next message with an inactivity timeout.
+            try:
+                item = await asyncio.wait_for(q.get(), timeout=core.TURN_INACTIVITY_TIMEOUT)
+            except asyncio.TimeoutError:
+                if not active.turn_active:
+                    # Idle between turns — not stuck, just waiting for user input.
+                    continue
+                # A turn is in flight but nothing arrived for TURN_INACTIVITY_TIMEOUT.
+                # The model call or an MCP tool is hung. Try to interrupt.
+                yield {"type": "system", "subtype": "watchdog",
+                       "message": f"no response for {int(core.TURN_INACTIVITY_TIMEOUT)}s — interrupting stuck turn"}
+                await interrupt(active)
+                try:
+                    item = await asyncio.wait_for(q.get(), timeout=core.TURN_RECOVERY_TIMEOUT)
+                except asyncio.TimeoutError:
+                    # Interrupt didn't produce a result. Check if the CLI died.
+                    if not client_alive(active):
+                        yield {"type": "system", "subtype": "watchdog",
+                               "message": "agent process died — restarting session"}
+                        try:
+                            await respawn(active)
+                        except Exception as e:
+                            yield {"type": "error", "message": f"respawn failed: {e}"}
+                            return
+                        # Restart the pump with the fresh client.
+                        pump_task.cancel()
+                        pump_task = asyncio.create_task(_pump())
+                        active.turn_active = False
+                        continue
+                    yield {"type": "error",
+                           "message": "turn timed out and could not be recovered — try sending again"}
+                    active.turn_active = False
+                    continue
+                except StopAsyncIteration:
+                    return
+
+            if item is None:
+                return  # stream ended (client disconnected cleanly)
+            if isinstance(item, Exception):
+                raise item
+
+            payload = _serialize(item)
             if payload.get("type") == "user":
                 # tool result coming back — rewrite content to surface plots / files
                 payload = _rewrite_user(payload, workspace=active.workspace)
+            if payload.get("type") == "assistant":
+                payload = _rewrite_assistant(payload, workspace=active.workspace)
             if payload.get("type") == "result":
-                _record_result_usage(active.session_id, msg)
+                _record_result_usage(active.session_id, item)
+                active.turn_active = False
             yield payload
-            if payload.get("type") == "result":
-                return
     finally:
         sender.cancel()
+        pump_task.cancel()
 
 
 def _record_result_usage(sid: str, msg: Any) -> None:
@@ -373,10 +478,11 @@ async def _steer_pump(active: ActiveSession) -> None:
     while True:
         item = await active.pending_steer.get()
         if item.get("type") == "user":
+            active.turn_active = True
             try:
                 await active.client.query(item["text"])
             except Exception:
-                pass
+                active.turn_active = False
 
 
 def _serialize(msg: Any) -> dict:
@@ -440,6 +546,22 @@ def _serialize(msg: Any) -> dict:
     return out
 
 
+def _rewrite_assistant(payload: dict, workspace: Path | None = None) -> dict:
+    """Rewrite __ARTIFACT__ markers in assistant text blocks.
+
+    The agent sometimes emits artifact markers in its own text (not just tool
+    stdout). We rewrite them the same way as tool results so the UI can render
+    them as links/images.
+    """
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return payload
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "text":
+            block["text"] = rewrite_tool_result_content(block.get("text", ""), workspace=workspace)
+    return payload
+
+
 def _rewrite_user(payload: dict, workspace: Path | None = None) -> dict:
     """If a tool_result block contains __ARTIFACT__ markers, replace its content
     with structured image/file blocks. See artifact_parser.py for the marker format.
@@ -465,14 +587,14 @@ def _rewrite_user(payload: dict, workspace: Path | None = None) -> dict:
         tool_name = block.get("tool_use_id") or "tool"
         inner = block.get("content")
         if isinstance(inner, str):
-            inner = rewrite_tool_result_content(inner)
+            inner = rewrite_tool_result_content(inner, workspace=workspace)
             if workspace is not None:
                 inner, _ = trim_tool_result_blocks(inner, workspace=workspace, tool_name=tool_name)
             block["content"] = inner
         elif isinstance(inner, list):
             for sub in inner:
                 if isinstance(sub, dict) and sub.get("type") == "text":
-                    sub["text"] = rewrite_tool_result_content(sub.get("text", ""))
+                    sub["text"] = rewrite_tool_result_content(sub.get("text", ""), workspace=workspace)
             if workspace is not None:
                 inner, _ = trim_tool_result_blocks(inner, workspace=workspace, tool_name=tool_name)
     return payload

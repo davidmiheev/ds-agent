@@ -60,6 +60,52 @@ the same symptoms.
 - Trimmed outputs land in `<workspace>/.truncated/<tool>-<hash>.txt`; the
   model sees head + `[truncated]` + tail + a pointer to the full file.
 
+## Stuck agent incident (2026-08-26) — root cause & fix
+
+**Symptom**: user sent "can you run your both of your code blocks on kaggle?"
+and the UI showed `assistant — working…` forever. The stop button did nothing
+useful; the session was unusable until a page refresh.
+
+**What was actually stuck**: NOT an MCP tool call. The transcript shows the
+user message was written at 21:41:37 and **no assistant response ever
+followed** — the hang was on the **model API call itself**. The claude CLI
+held an ESTABLISHED TCP connection to OpenRouter (`google/gemma-4-31b-it`)
+that never returned a single byte. The server log even flagged
+`[claude-code:unrecognized_model] {"model":"google/gemma-4-31b-it"}` right
+before the hang — the CLI didn't recognize the model and the upstream request
+sat open indefinitely.
+
+**Why nothing recovered it**:
+1. `stream_events()` did a bare `async for msg in receive_messages()` with
+   **no timeout anywhere** — a hung model call blocks the generator forever.
+2. The UI's `busy` flag only clears on a `result` frame, which never came,
+   so "working…" stayed up.
+3. When the user finally hit stop, the interrupt killed the claude subprocess,
+   but the in-memory `ActiveSession` kept holding the **dead client** — the
+   next message would write into a dead pipe.
+
+**Fix** (sessions.py + app.js):
+- `stream_events()` is now long-lived (survives across turns; the SDK stream
+  stays open) and reads messages through a queue with
+  `asyncio.wait_for(timeout=TURN_INACTIVITY_TIMEOUT)` (default 300s, env
+  `TURN_INACTIVITY_TIMEOUT`). The watchdog is only armed while
+  `active.turn_active` is set (set by the steer pump on query, cleared on the
+  result frame), so idle time between turns never false-positives.
+- On timeout: emit a `system/watchdog` frame → `interrupt()` → wait
+  `TURN_RECOVERY_TIMEOUT` (default 30s) for a result. If the CLI died
+  (`client_alive()` checks `transport._process.returncode`), `respawn()`
+  disconnects and spawns a fresh client resuming the transcript.
+- UI handles `error` / `reader_error` / `system.watchdog` frames by clearing
+  `busy` and showing a ⚠ line, so the UI can never get stuck on "working…".
+- `app.py` cancels the reader task on WS disconnect (stream_events no longer
+  self-terminates on result).
+
+**Lesson**: any `async for` over an external stream needs an inactivity
+timeout, and "the model call hung" is a real failure mode for gateway
+providers (OpenRouter) — it is NOT always an MCP tool that's stuck. Check the
+transcript: if the user message is the last entry with no assistant reply,
+the hang is on the model API, not a tool.
+
 ## End-to-end test status (2026-08-23/24)
 
 - `tests/colab_mcp_end_to_end_test.txt` — PASS: `colab_status` ("No active

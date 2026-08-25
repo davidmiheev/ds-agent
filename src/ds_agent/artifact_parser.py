@@ -15,7 +15,7 @@ import mimetypes
 import re
 from pathlib import Path
 
-ARTIFACT_RE = re.compile(r"^__ARTIFACT__:([\w-]+):(.+?)\s*$", re.MULTILINE)
+ARTIFACT_RE = re.compile(r"^[ \t`]*__ARTIFACT__:([\w-]+):(.+?)\s*$", re.MULTILINE)
 
 # 5 MB hard cap; refuse to inline bigger files.
 MAX_INLINE_BYTES = 5 * 1024 * 1024
@@ -36,18 +36,26 @@ _MIME = {
 }
 
 
-def rewrite_tool_result_content(text: str) -> str:
+def rewrite_tool_result_content(text: str, workspace: Path | None = None) -> str:
     """Return a HTML-annotated version of `text` with __ARTIFACT__ markers replaced.
 
     The browser parses the surrounding HTML to extract embedded artifacts; see
     static/app.js. We do the heavy lifting server-side so the JS stays tiny.
+
+    If `workspace` is given, markers whose path doesn't exist are retried as
+    <workspace>/<basename> — models often hallucinate sandbox-style paths like
+    /workspace/plot.png when the file actually lives in the session workspace.
     """
     if not text or "__ARTIFACT__" not in text:
         return text
 
     def _repl(m: re.Match) -> str:
-        kind, path = m.group(1), m.group(2).strip()
+        kind, path = m.group(1), m.group(2).strip().strip("`").strip()
         p = Path(path)
+        if (not p.exists() or not p.is_file()) and workspace is not None:
+            cand = Path(workspace) / p.name
+            if cand.exists() and cand.is_file():
+                p = cand
         if not p.exists() or not p.is_file():
             return f"\n[artifact missing: {path}]\n"
         try:

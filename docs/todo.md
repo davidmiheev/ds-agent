@@ -34,6 +34,12 @@ Current state as of 2026-08-25, right after the repo restructure
   (highlight.js) + a copy button.
 - File links: text-based files served as `text/plain` + `Content-Disposition: inline`
   so they don't blank-tab / force-download (images/PDFs unchanged).
+- Stuck-agent watchdog: `stream_events` is now long-lived with an inactivity
+  timeout (`TURN_INACTIVITY_TIMEOUT`, default 300s) → interrupt → respawn if the
+  CLI died. UI clears `busy` on error/watchdog frames. Root cause documented in
+  `docs/debug_notes.md` (hung OpenRouter model call, not an MCP tool).
+- `__ARTIFACT__` markers in assistant text (not just tool stdout) are now
+  rewritten server-side and rendered as links/images in the chat (live + history).
 
 ## Open
 

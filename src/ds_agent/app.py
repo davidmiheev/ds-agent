@@ -413,6 +413,7 @@ async def ws_session(ws: WebSocket, sid: str):
 
     active.in_use = True
     db.touch_session(sid)
+    reader_task = None
     try:
         # Greet
         await ws.send_text(json.dumps({
@@ -463,6 +464,10 @@ async def ws_session(ws: WebSocket, sid: str):
         pass
     finally:
         active.in_use = False
+        # stream_events is long-lived (survives across turns); cancel the
+        # reader so its internal pump tasks don't leak after the WS closes.
+        if reader_task is not None:
+            reader_task.cancel()
 
 
 @app.get("/healthz")
