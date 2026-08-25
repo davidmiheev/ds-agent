@@ -29,9 +29,13 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from typing import Any
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp import types
+from mcp.server import MCPServer
+
+# Strip inherited proxy env vars (a dead SOCKS proxy in the parent shell
+# would break urllib/requests calls to the academic APIs).
+for _k in list(os.environ):
+    if _k.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        del os.environ[_k]
 
 LOG = logging.getLogger("research-mcp")
 logging.basicConfig(level=logging.INFO, stream=__import__("sys").stderr)
@@ -46,7 +50,7 @@ NS = {
     "medline": "https://www.ncbi.nlm.nih.gov/entrez/eutils/1.0/",
 }
 
-server = Server("research-mcp")
+server = MCPServer("research-mcp")
 
 
 def _http_json(url: str, *, headers: dict | None = None, timeout: float = 20.0) -> Any:
@@ -337,56 +341,84 @@ def fred_series(series_id: str, limit: int = 10) -> list[dict]:
     return d.get("observations", [])
 
 
-# ---------------- MCP glue ----------------
+# ---------------- MCP tools (2.x API) ----------------
 
-@server.list_tools()
-async def list_tools() -> list[types.Tool]:
-    return [
-        types.Tool(name="arxiv_search", description="Search arXiv. Field qualifiers: au:Author, ti:Title, abs:Abstract.", inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer", "default": 10}}, "required": ["query"]}),
-        types.Tool(name="semantic_scholar_search", description="Cross-domain academic search with citations (Semantic Scholar).", inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 10}, "year_from": {"type": "integer"}}, "required": ["query"]}),
-        types.Tool(name="openalex_search", description="OpenAlex scholarly works search (no auth, no rate limit for personal use).", inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 10}, "year_from": {"type": "integer"}}, "required": ["query"]}),
-        types.Tool(name="pubmed_search", description="PubMed biomedical literature search (NCBI E-utilities).", inputSchema={"type": "object", "properties": {"term": {"type": "string"}, "max_results": {"type": "integer", "default": 10}}, "required": ["term"]}),
-        types.Tool(name="crossref_lookup", description="Look up a paper by DOI via CrossRef.", inputSchema={"type": "object", "properties": {"doi": {"type": "string"}}, "required": ["doi"]}),
-        types.Tool(name="biorxiv_search", description="Search bioRxiv preprints.", inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer", "default": 10}}, "required": ["query"]}),
-        types.Tool(name="hf_search_models", description="HuggingFace model search. Set HF_TOKEN env for higher rate limits.", inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 10}}, "required": ["query"]}),
-        types.Tool(name="hf_search_datasets", description="HuggingFace dataset search.", inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 10}}, "required": ["query"]}),
-        types.Tool(name="uniprot_search", description="UniProt protein search (Swiss-Prot + TrEMBL).", inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 10}}, "required": ["query"]}),
-        types.Tool(name="pdb_search", description="RCSB PDB protein structure search.", inputSchema={"type": "object", "properties": {"query": {"type": "string"}, "limit": {"type": "integer", "default": 10}}, "required": ["query"]}),
-        types.Tool(name="ensembl_search", description="Look up a gene by symbol in Ensembl (default: human).", inputSchema={"type": "object", "properties": {"gene": {"type": "string"}, "species": {"type": "string", "default": "human"}}, "required": ["gene"]}),
-        types.Tool(name="fred_series", description="Fetch FRED economic time-series observations. Requires FRED_API_KEY env (free).", inputSchema={"type": "object", "properties": {"series_id": {"type": "string"}, "limit": {"type": "integer", "default": 10}}, "required": ["series_id"]}),
-    ]
+@server.tool(name="arxiv_search")
+def arxiv_search_tool(query: str, max_results: int = 10) -> str:
+    """Search arXiv. Field qualifiers: au:Author, ti:Title, abs:Abstract."""
+    return json.dumps(arxiv_search(query, max_results), indent=2, default=str)
 
 
-def _call(name: str, args: dict) -> Any:
-    try:
-        if name == "arxiv_search":            return arxiv_search(args["query"], args.get("max_results", 10))
-        if name == "semantic_scholar_search": return semantic_scholar_search(args["query"], args.get("limit", 10), args.get("year_from"))
-        if name == "openalex_search":         return openalex_search(args["query"], args.get("limit", 10), args.get("year_from"))
-        if name == "pubmed_search":           return pubmed_search(args["term"], args.get("max_results", 10))
-        if name == "crossref_lookup":         return crossref_lookup(args["doi"])
-        if name == "biorxiv_search":          return bioRxiv_search(args["query"], args.get("max_results", 10))
-        if name == "hf_search_models":        return hf_search_models(args["query"], args.get("limit", 10))
-        if name == "hf_search_datasets":      return hf_search_datasets(args["query"], args.get("limit", 10))
-        if name == "uniprot_search":          return uniprot_search(args["query"], args.get("limit", 10))
-        if name == "pdb_search":              return pdb_search(args["query"], args.get("limit", 10))
-        if name == "ensembl_search":          return ensembl_search(args["gene"], args.get("species", "human"))
-        if name == "fred_series":             return fred_series(args["series_id"], args.get("limit", 10))
-    except Exception as e:
-        import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:500]}
-    return {"error": f"unknown tool {name}"}
+@server.tool(name="semantic_scholar_search")
+def semantic_scholar_search_tool(query: str, limit: int = 10, year_from: int | None = None) -> str:
+    """Cross-domain academic search with citations (Semantic Scholar)."""
+    return json.dumps(semantic_scholar_search(query, limit, year_from), indent=2, default=str)
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
-    result = await asyncio.to_thread(_call, name, arguments)
-    return [types.TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+@server.tool(name="openalex_search")
+def openalex_search_tool(query: str, limit: int = 10, year_from: int | None = None) -> str:
+    """OpenAlex scholarly works search (no auth, no rate limit for personal use)."""
+    return json.dumps(openalex_search(query, limit, year_from), indent=2, default=str)
 
 
-async def main():
-    async with stdio_server() as (read, write):
-        await server.run(read, write, server.create_initialization_options())
+@server.tool(name="pubmed_search")
+def pubmed_search_tool(term: str, max_results: int = 10) -> str:
+    """PubMed biomedical literature search (NCBI E-utilities)."""
+    return json.dumps(pubmed_search(term, max_results), indent=2, default=str)
+
+
+@server.tool(name="crossref_lookup")
+def crossref_lookup_tool(doi: str) -> str:
+    """Look up a paper by DOI via CrossRef."""
+    return json.dumps(crossref_lookup(doi), indent=2, default=str)
+
+
+@server.tool(name="biorxiv_search")
+def biorxiv_search_tool(query: str, max_results: int = 10) -> str:
+    """Search bioRxiv preprints."""
+    return json.dumps(bioRxiv_search(query, max_results), indent=2, default=str)
+
+
+@server.tool(name="hf_search_models")
+def hf_search_models_tool(query: str, limit: int = 10) -> str:
+    """HuggingFace model search. Set HF_TOKEN env for higher rate limits."""
+    return json.dumps(hf_search_models(query, limit), indent=2, default=str)
+
+
+@server.tool(name="hf_search_datasets")
+def hf_search_datasets_tool(query: str, limit: int = 10) -> str:
+    """HuggingFace dataset search."""
+    return json.dumps(hf_search_datasets(query, limit), indent=2, default=str)
+
+
+@server.tool(name="uniprot_search")
+def uniprot_search_tool(query: str, limit: int = 10) -> str:
+    """UniProt protein search (Swiss-Prot + TrEMBL)."""
+    return json.dumps(uniprot_search(query, limit), indent=2, default=str)
+
+
+@server.tool(name="pdb_search")
+def pdb_search_tool(query: str, limit: int = 10) -> str:
+    """RCSB PDB protein structure search."""
+    return json.dumps(pdb_search(query, limit), indent=2, default=str)
+
+
+@server.tool(name="ensembl_search")
+def ensembl_search_tool(gene: str, species: str = "human") -> str:
+    """Look up a gene by symbol in Ensembl (default: human)."""
+    return json.dumps(ensembl_search(gene, species), indent=2, default=str)
+
+
+@server.tool(name="fred_series")
+def fred_series_tool(series_id: str, limit: int = 10) -> str:
+    """Fetch FRED economic time-series observations. Requires FRED_API_KEY env (free)."""
+    return json.dumps(fred_series(series_id, limit), indent=2, default=str)
+
+
+def main() -> None:
+    import asyncio
+    asyncio.run(server.run_stdio_async())
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

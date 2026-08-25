@@ -16,9 +16,10 @@ Env vars (set in mcp.json):
                    (default ~/.coding-agent/ds-env/bin/python)
   DS_RUN_TIMEOUT — seconds before ds_run is killed (default 600)
 
-NOTE: written against the mcp 2.x API (MCPServer + @server.tool). The
-research_mcp / colab_mcp servers use the older 1.x decorator API and run on
-a separate venv — do not mix the two styles.
+NOTE: written against the mcp 2.x API (MCPServer + @server.tool).
+research_mcp also runs on the 2.x API in the main venv. colab_mcp uses the
+older 1.x decorator API and runs on its own venv (mcp<2) — do not mix the
+two styles.
 """
 from __future__ import annotations
 import json

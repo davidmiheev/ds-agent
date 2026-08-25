@@ -42,6 +42,13 @@ from colab_cli.auth import (
 )
 from colab_cli.runtime import ColabRuntime
 
+# Strip inherited proxy env vars. The parent shell may export a dead SOCKS
+# proxy (ALL_PROXY=socks5://127.0.0.1:1080) which makes requests raise
+# InvalidSchema (no socksio installed) on every Google API call.
+for _k in list(os.environ):
+    if _k.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        del os.environ[_k]
+
 # Resolve ~/.config/colab-cli (the standard location the CLI uses) so we
 # share auth tokens and session metadata with `colab` CLI.
 os.environ.setdefault("HOME", str(Path.home()))
