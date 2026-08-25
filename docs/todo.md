@@ -22,6 +22,9 @@ Current state as of 2026-08-25, right after the repo restructure
   active session survives reload via URL hash + sessionStorage. Also fixed
   the broken `resume=` wiring (was passing our sid / checking a legacy
   transcript path — now uses the SDK session UUID from the transcript).
+- Quantitative research foundations: `fred_series` in `research_mcp` for macroeconomic
+  time-series, `statsmodels`/`scipy`/`plotly` in `ds-env`, arXiv `q-fin` search support,
+  and `vectorbt`/`backtesting` system prompt guidance.
 
 ## Open
 
@@ -53,6 +56,12 @@ Current state as of 2026-08-25, right after the repo restructure
 - [x] `mcp.json.example` updated to the new `colab_mcp.colab_server` wrapper
       and now uses `${ROOT}` / `${DATA_DIR}` placeholders (host-agnostic).
 - [x] `.gitignore` added (`.venv*`, `__pycache__`, `.env`).
+
+### Quantitative Research & Financial Data Roadmap 📈
+- [ ] **Market Data MCP / Tools**: Add Yahoo Finance (`yfinance`) or Polygon/Alpaca/Tiingo integration for instant OHLCV historical asset prices and real-time quotes.
+- [ ] **SEC EDGAR & Financial Filing Search**: Add 10-K / 10-Q filing retrieval and earnings transcript extraction tool to `research_mcp`.
+- [ ] **Quant Package Presets in `install_ds_env.sh`**: Pre-install or document quant packages (`yfinance`, `pandas-ta`, `vectorbt`, `backtesting`, `arch`, `quantstats`).
+- [ ] **Quant Artifact Templates**: System prompt guidance for generating interactive Plotly financial charts (candlesticks, drawdown curves, return heatmaps) and tearsheets (`quantstats`).
 
 ### Low / ideas
 - [ ] Session export (transcript → markdown)

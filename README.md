@@ -1,18 +1,19 @@
 # 📊 ds-agent — Agent for Data Science Tasks with Kaggle & Google Colab MCP
 
-> A personal, single-process AI data science agent server featuring Claude Code / Claude Agent SDK in the browser, BYOK (Bring Your Own Keys), inline plot/dataset artifact rendering, and built-in MCPs for **Kaggle**, **Google Colab**, **Data Science Execution**, and **Academic Research**.
+> A personal, single-process AI data science & quantitative research agent server featuring Claude Code / Claude Agent SDK in the browser, BYOK (Bring Your Own Keys), inline plot/dataset artifact rendering, and built-in MCPs for **Kaggle**, **Google Colab**, **Data Science Execution**, **Quantitative Research**, and **Academic Literature**.
 
 ---
 
 ## 🌟 Overview
 
-**ds-agent** is an autonomous assistant built specifically for end-to-end data science workflows: exploratory data analysis (EDA), statistical modeling, machine learning benchmarking, scientific literature retrieval, and cloud compute execution.
+**ds-agent** is an autonomous assistant built specifically for end-to-end data science and quantitative research workflows: exploratory data analysis (EDA), statistical & econometric modeling, strategy backtesting, machine learning benchmarking, scientific literature retrieval, and cloud compute execution.
 
 ### Key Capabilities
 - **Official Kaggle MCP**: Search, query, and download datasets, competition data, models, and benchmarks directly via Kaggle's official remote MCP gateway.
 - **Programmatic Google Colab MCP**: Provision cloud runtimes (CPU, T4, L4, A100, TPU), execute heavy training/inference scripts, install remote dependencies, and capture plots—no browser automation needed.
 - **Dedicated Data Science Environment & MCP (`ds_mcp`)**: Fast, isolated data science environment (`pandas`, `polars`, `numpy`, `scikit-learn`, `scipy`, `statsmodels`, `seaborn`, `plotly`, `pyarrow`, etc.) with one-call dataset inspection (`ds_preview`) and code execution (`ds_run`).
-- **Research & Bio/Quant MCP (`research_mcp`)**: 12 search tools across arXiv, Semantic Scholar, OpenAlex, PubMed, bioRxiv, Hugging Face (models & datasets), UniProt, PDB, Ensembl, and FRED economic time-series.
+- **Quantitative & Macroeconomic Research**: Integrated Federal Reserve Economic Data (FRED) API series query, statistical/econometric modeling (`statsmodels`, `scipy`), financial backtesting guidance (`vectorbt`, `backtesting.py`), and quantitative finance paper search (`q-fin` on arXiv).
+- **Academic & Bio/Quant MCP (`research_mcp`)**: 12 search tools across arXiv, Semantic Scholar, OpenAlex, PubMed, bioRxiv, Hugging Face (models & datasets), UniProt, PDB, Ensembl, and FRED economic time-series.
 - **Inline Artifact Rendering**: Matplotlib figures, Seaborn charts, and Plotly visualizations render inline immediately. CSVs, Parquet files, JSON data, and Markdown reports surface as one-click downloads.
 - **Token Economy & Prompt Caching**: Real-time cost calculation, cache hit tracking (`cache_read_tokens`), automated context compaction, and output trimming.
 - **Zero-Build Web UI**: Clean, responsive interface featuring streaming chat, live tool inspection, an embedded xterm.js terminal, dataset uploader (up to 2 GB), and workspace file browser.
@@ -91,14 +92,35 @@ Isolates analytical workloads in a dedicated Python environment located at `~/.c
 | `ds_preview` | **Automated EDA**: Inspects CSV, Parquet, Excel, Feather, or JSON files. Returns row/col dimensions, column types, null counts, sample head rows, and distribution summaries. |
 | `ds_run` | Runs Python code or analytical scripts in the DS environment (with configurable timeouts up to 600s). |
 | `ds_env` | Returns the Python interpreter path and installed library versions. |
-| `ds_install` | Installs additional libraries (`xgboost`, `lightgbm`, `torch`, `biopython`, etc.) into the DS environment. |
+| `ds_install` | Installs additional libraries (`xgboost`, `lightgbm`, `torch`, `vectorbt`, `yfinance`, etc.) into the DS environment. |
 
 ### 4. Academic & Bio/Quant Research MCP (`research_mcp`)
 A unified search server with 12 tools for literature and biological/economic data:
-- **Literature**: `arxiv_search`, `semantic_scholar_search`, `openalex_search`, `pubmed_search`, `biorxiv_search`, `crossref_lookup`.
+- **Macroeconomics & Quantitative Data**: `fred_series` (Federal Reserve Economic Data for interest rates, inflation, GDP, yield curves, monetary indicators).
+- **Literature**: `arxiv_search` (supporting CS, stats, `q-bio`, and `q-fin`), `semantic_scholar_search`, `openalex_search`, `pubmed_search`, `biorxiv_search`, `crossref_lookup`.
 - **Machine Learning & Data**: `hf_search_models`, `hf_search_datasets`.
 - **Bioinformatics**: `uniprot_search`, `pdb_search`, `ensembl_search`.
-- **Economics & Time-Series**: `fred_series` (Federal Reserve Economic Data).
+
+---
+
+## 📈 Quantitative Research & Financial Analysis
+
+ds-agent is optimized for quantitative analysis, econometric modeling, and algorithmic research:
+
+1. **Macroeconomic Indicators (FRED API)**:
+   - Call `fred_series(series_id="DGS10")` (10-Year Treasury Yield), `fred_series(series_id="CPIAUCSL")` (Consumer Price Index), `fred_series(series_id="FEDFUNDS")` (Federal Funds Effective Rate), etc.
+   - Set `FRED_API_KEY` in environment or UI settings for full access.
+
+2. **Time-Series & Econometrics**:
+   - `statsmodels` & `scipy` pre-installed for ARIMA, GARCH, vector autoregression (VAR), cointegration tests, and OLS factor regressions.
+   - High-performance data manipulation via `pandas`, `polars`, and `pyarrow`.
+
+3. **Strategy Backtesting & Quantitative Modeling**:
+   - Agent prompts are tuned for backtesting workflows (`vectorbt`, `backtesting.py`).
+   - Seamless installation of market data toolkits (`yfinance`, `pandas-ta`, `quantstats`) via `ds_install` or `DS_EXTRA_PACKAGES`.
+
+4. **Financial Visualizations**:
+   - Generate interactive Plotly or Matplotlib equity curves, drawdown charts, correlation matrices, and candlestick charts, instantly surfaced in the chat UI via `__ARTIFACT__:plot:...`.
 
 ---
 
@@ -149,6 +171,9 @@ uv sync
 
 # Set up the dedicated data-science environment (pandas, scikit-learn, etc.)
 bash scripts/install_ds_env.sh
+
+# Optional: include extra quant / ML libraries
+DS_EXTRA_PACKAGES="yfinance vectorbt pandas-ta xgboost torch" bash scripts/install_ds_env.sh
 ```
 
 ### 3. Environment Configuration
@@ -159,6 +184,9 @@ OPENROUTER_API_KEY=sk-or-v1-...
 
 # Optional Web UI login password (leave unset for passwordless local mode)
 APP_PASSWORD=your-secure-password
+
+# Optional FRED API key for economic data (free at https://fred.stlouisfed.org)
+FRED_API_KEY=your-fred-api-key
 ```
 
 ### 4. Run the Agent Server
@@ -196,7 +224,7 @@ ds-agent/
 │   │   ├── sessions.py       # Claude Agent SDK subprocess lifecycle & message bus
 │   │   ├── artifact_parser.py# Parser for __ARTIFACT__: markers -> inline HTML
 │   │   ├── trim.py           # Intelligent tool-result output trimmer
-│   │   ├── agent_prompt.py   # Data science system prompt & artifact guidelines
+│   │   ├── agent_prompt.py   # Data science & quant system prompt & artifact guidelines
 │   │   ├── model_catalog.py  # Model registry & live OpenRouter catalog fetcher
 │   │   ├── templates/        # Jinja2 HTML templates
 │   │   └── static/           # Client-side JavaScript (HTMX, Alpine, xterm, artifacts)
@@ -208,12 +236,12 @@ ds-agent/
 │   ├── ds_mcp/               # Data Science execution MCP
 │   │   └── server.py         # ds_preview, ds_run, ds_env, ds_install tools
 │   │
-│   └── research_mcp/         # Academic literature & scientific data MCP
-│       └── server.py         # arXiv, PubMed, OpenAlex, HuggingFace, PDB search tools
+│   └── research_mcp/         # Academic literature & scientific/economic data MCP
+│       └── server.py         # arXiv (CS/q-fin), PubMed, FRED, OpenAlex, HuggingFace
 │
 ├── deploy/
 │   └── Caddyfile             # 5-line Caddy reverse proxy configuration with automatic TLS
-├── docs/                     # Architecture notes and debug references
+├── docs/                     # Architecture notes (arch.md) and roadmap (todo.md)
 ├── scripts/
 │   ├── run_server.sh         # Startup script on port 8765 (with auto port-reclaim)
 │   └── install_ds_env.sh     # Installer for dedicated ~/.coding-agent/ds-env
