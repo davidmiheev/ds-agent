@@ -25,6 +25,15 @@ Current state as of 2026-08-25, right after the repo restructure
 - Quantitative research foundations: `fred_series` in `research_mcp` for macroeconomic
   time-series, `statsmodels`/`scipy`/`plotly` in `ds-env`, arXiv `q-fin` search support,
   and `vectorbt`/`backtesting` system prompt guidance.
+- Quant package presets in `install_ds_env.sh` (`INSTALL_QUANT=1` / `DS_PRESET=quant`):
+  `yfinance`, `pandas-ta`, `vectorbt`, `backtesting`, `arch`, `quantstats`.
+- Kaggle MCP verified end-to-end (71 tools; `search_datasets` returns live data).
+  Token auto-seeded from `KAGGLE_API_TOKEN` in `.env` → BYOK "kaggle" provider.
+- Chat UI: live streaming now renders text + tool calls in correct interleaved order
+  (was: all text first, then all tool calls); code blocks get syntax highlighting
+  (highlight.js) + a copy button.
+- File links: text-based files served as `text/plain` + `Content-Disposition: inline`
+  so they don't blank-tab / force-download (images/PDFs unchanged).
 
 ## Open
 
@@ -60,7 +69,7 @@ Current state as of 2026-08-25, right after the repo restructure
 ### Quantitative Research & Financial Data Roadmap 📈
 - [ ] **Market Data MCP / Tools**: Add Yahoo Finance (`yfinance`) or Polygon/Alpaca/Tiingo integration for instant OHLCV historical asset prices and real-time quotes.
 - [ ] **SEC EDGAR & Financial Filing Search**: Add 10-K / 10-Q filing retrieval and earnings transcript extraction tool to `research_mcp`.
-- [ ] **Quant Package Presets in `install_ds_env.sh`**: Pre-install or document quant packages (`yfinance`, `pandas-ta`, `vectorbt`, `backtesting`, `arch`, `quantstats`).
+- [x] **Quant Package Presets in `install_ds_env.sh`**: Pre-install or document quant packages (`yfinance`, `pandas-ta`, `vectorbt`, `backtesting`, `arch`, `quantstats`).
 - [ ] **Quant Artifact Templates**: System prompt guidance for generating interactive Plotly financial charts (candlesticks, drawdown curves, return heatmaps) and tearsheets (`quantstats`).
 
 ### Low / ideas

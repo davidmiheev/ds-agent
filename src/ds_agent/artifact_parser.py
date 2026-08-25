@@ -61,7 +61,7 @@ def rewrite_tool_result_content(text: str) -> str:
         return (
             f"\n<div class=\"artifact\" "
             f"data-kind=\"{kind}\" data-mime=\"{mime}\" data-name=\"{p.name}\" "
-            f"data-b64=\"{b64}\"></div>\n"
+            f"data-path=\"{path}\" data-b64=\"{b64}\"></div>\n"
         )
 
     return ARTIFACT_RE.sub(_repl, text)

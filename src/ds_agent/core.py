@@ -38,3 +38,12 @@ SESSION_BACKEND = os.environ.get("SESSION_BACKEND", "local")
 
 # Hard cap per session so a runaway agent can't drain your OpenRouter wallet in one shot.
 MAX_BUDGET_USD = float(os.environ.get("MAX_BUDGET_USD", "5.0"))
+
+# Turn watchdog: if the SDK emits no message at all for this long (model call
+# or MCP tool call hung with no response), interrupt the turn. Some providers
+# (e.g. OpenRouter) can hold a request open indefinitely on a dead upstream.
+TURN_INACTIVITY_TIMEOUT = float(os.environ.get("TURN_INACTIVITY_TIMEOUT", "300"))
+
+# If an interrupt doesn't produce a result frame within this long, the client
+# is force-disconnected and respawned so the session is usable again.
+TURN_RECOVERY_TIMEOUT = float(os.environ.get("TURN_RECOVERY_TIMEOUT", "30"))

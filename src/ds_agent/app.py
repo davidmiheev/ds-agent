@@ -20,13 +20,31 @@ app = FastAPI(title="Coding Agent")
 def _seed_env_keys() -> None:
     """Seed BYOK keys from env vars on first run, so .env alone is enough.
 
-    OPENROUTER_API_KEY → stored as the 'openrouter' provider key (only if no
-    key is stored yet — the Settings page always wins over the env var).
+    OPENROUTER_API_KEY → stored as 'openrouter' provider key
+    ANTHROPIC_API_KEY  → stored as 'anthropic' provider key
+    MINIMAX_API_KEY    → stored as 'minimax' provider key
+    KAGGLE_API_TOKEN   → stored as 'kaggle' provider key (for Kaggle MCP)
     """
     import os
     or_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if or_key and not crypto.load_key("openrouter"):
         crypto.save_key("openrouter", or_key, "https://openrouter.ai/api", "OpenRouter (env)")
+
+    ant_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if ant_key and not crypto.load_key("anthropic"):
+        crypto.save_key("anthropic", ant_key, label="Anthropic (env)")
+
+    mm_key = os.environ.get("MINIMAX_API_KEY", "").strip()
+    if mm_key and not crypto.load_key("minimax"):
+        crypto.save_key("minimax", mm_key, "https://api.minimaxi.chat/v1", "MiniMax (env)")
+
+    kg_key = (
+        os.environ.get("KAGGLE_API_TOKEN")
+        or os.environ.get("KAGGLE_KEY")
+        or os.environ.get("KAGGLE_TOKEN", "")
+    ).strip()
+    if kg_key and not crypto.load_key("kaggle"):
+        crypto.save_key("kaggle", kg_key, label="Kaggle API Token (env)")
 
 
 HERE = Path(__file__).parent
@@ -297,7 +315,23 @@ async def read_file(sid: str, path: str):
         raise HTTPException(403, "path escapes workspace")
     if not full.exists() or not full.is_file():
         raise HTTPException(404, "no such file")
-    return FileResponse(full)
+    # Browsers (Chrome in particular) will NOT render text/csv, text/markdown,
+    # etc. inline — they force a download even with Content-Disposition: inline.
+    # They DO render text/plain inline. So for text-based files we serve them as
+    # text/plain so the content shows in the tab; the download still saves the
+    # correct bytes + filename (taken from Content-Disposition, not the MIME).
+    # Images / PDFs keep their real MIME so they render natively.
+    import mimetypes
+    guessed = mimetypes.guess_type(full.name)[0] or "application/octet-stream"
+    media_type = guessed
+    if guessed.startswith("text/") and guessed not in ("text/plain", "text/html"):
+        media_type = "text/plain; charset=utf-8"
+    return FileResponse(
+        full,
+        filename=full.name,
+        media_type=media_type,
+        content_disposition_type="inline",
+    )
 
 
 # ------------------------------------------------- dataset upload (data/) --

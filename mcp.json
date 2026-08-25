@@ -6,7 +6,7 @@
       "timeout": 15000
     },
     "colab": {
-      "command": "${ROOT}/.venv-313/bin/python",
+      "command": "${ROOT}/src/colab_mcp/.venv/bin/python",
       "args": ["-m", "colab_mcp.colab_server"],
       "timeout": 120000,
       "env": {
@@ -15,7 +15,7 @@
       }
     },
     "research": {
-      "command": "${ROOT}/.venv-313/bin/python",
+      "command": "${ROOT}/.venv/bin/python",
       "args": ["-m", "research_mcp.server"],
       "timeout": 30000,
       "env": {

@@ -119,6 +119,7 @@ function chatApp() {
         }
         if (d.last_usage) this.lastUsage = d.last_usage;
         this._scrollDown();
+        this._enhanceCodeBlocks();
       } catch (e) { /* history is best-effort */ }
     },
 
@@ -173,9 +174,7 @@ function chatApp() {
         return;
       }
 
-      // Assistant text: stream into a single growing message.
-      // Frames carry content at the top level (f.content); older/newer shapes
-      // may wrap it in f.message, so accept both.
+      // Assistant text / tool calls
       if (f.type === 'assistant') {
         const blocks = f.content || (f.message && f.message.content) || [];
         for (const b of blocks) {
@@ -230,25 +229,32 @@ function chatApp() {
 
     _appendAssistantText(text, opts = {}) {
       if (this._activeAssistantIdx < 0) {
-        this.messages.push({ role: 'assistant', html: '' });
+        this.messages.push({ role: 'assistant', html: '', _raw: '' });
         this._activeAssistantIdx = this.messages.length - 1;
       }
       const m = this.messages[this._activeAssistantIdx];
       m._raw = (m._raw || '') + (opts.thinking ? '> ' + text : text);
       m.html = this._renderMd(m._raw);
       this._scrollDown();
+      this._enhanceCodeBlocks();
     },
 
     _newToolBlock(b) {
+      // Crucial: reset assistant index so subsequent text starts a new message block below this tool
+      this._activeAssistantIdx = -1;
       this.messages.push({ role: 'tool', html: this._renderToolUse(b) });
       this._activeToolIdx = this.messages.length - 1;
       this._scrollDown();
+      this._enhanceCodeBlocks();
     },
 
     _appendToolResult(c) {
+      // Crucial: reset assistant index so subsequent text starts a new message block below this tool result
+      this._activeAssistantIdx = -1;
       const html = this._renderToolResult(c);
       this.messages.push({ role: 'tool-result', html });
       this._scrollDown();
+      this._enhanceCodeBlocks();
     },
 
     _appendSystem(text) {
@@ -258,8 +264,12 @@ function chatApp() {
 
     _renderMd(text) {
       if (!window.marked) return escapeHtml(text);
-      const dirty = marked.parse(text, { breaks: true, gfm: true });
-      return DOMPurify.sanitize(dirty, { ADD_TAGS: ['img'], ADD_ATTR: ['src', 'alt', 'class'] });
+      try {
+        const dirty = marked.parse(text, { breaks: true, gfm: true });
+        return DOMPurify.sanitize(dirty, { ADD_TAGS: ['img', 'svg', 'path', 'button'], ADD_ATTR: ['src', 'alt', 'class', 'target', 'href', 'download', 'title', 'rel'] });
+      } catch (e) {
+        return escapeHtml(text);
+      }
     },
 
     _renderToolUse(b) {
@@ -288,6 +298,13 @@ function chatApp() {
       return `<div class="tool-result${err}">${cleaned}</div>`;
     },
 
+    _enhanceCodeBlocks() {
+      this.$nextTick(() => {
+        const container = document.getElementById('messages');
+        if (container) enhanceCodeBlocks(container);
+      });
+    },
+
     send() {
       if (!this.canSend) return;
       const text = this.input.trim();
@@ -297,6 +314,7 @@ function chatApp() {
       this._activeAssistantIdx = -1;
       this.ws.send(JSON.stringify({ type: 'user', text }));
       this._scrollDown();
+      this._enhanceCodeBlocks();
     },
 
     interrupt() {
@@ -333,6 +351,7 @@ function chatApp() {
       this._activeAssistantIdx = -1;
       this.ws.send(JSON.stringify({ type: 'user', text }));
       this._scrollDown();
+      this._enhanceCodeBlocks();
     },
 
     fmtSize(n) {
@@ -354,19 +373,39 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[ch]));
 }
 
-// Server emits <div class="artifact" data-kind="..." data-mime="..." data-name="..." data-b64="..."></div>
-// Expand them into actual <img>/<a download> elements.
+// Convert base64 data to a Blob for reliable in-browser viewing and downloading
+function b64toBlob(b64Data, contentType) {
+  try {
+    const byteCharacters = atob(b64Data);
+    const byteArrays = [];
+    for (let offset = 0; offset < byteCharacters.length; offset += 512) {
+      const slice = byteCharacters.slice(offset, offset + 512);
+      const byteNumbers = new Array(slice.length);
+      for (let i = 0; i < slice.length; i++) {
+        byteNumbers[i] = slice.charCodeAt(i);
+      }
+      byteArrays.push(new Uint8Array(byteNumbers));
+    }
+    return new Blob(byteArrays, { type: contentType });
+  } catch (e) {
+    return new Blob([b64Data], { type: contentType });
+  }
+}
+
+// Server emits <div class="artifact" data-kind="..." data-mime="..." data-name="..." data-path="..." data-b64="..."></div>
+// Expand them into actual <img> or interactive file card elements with Blob URLs that open in the browser.
 function expandArtifacts(html) {
   const tmpl = document.createElement('template');
   tmpl.innerHTML = html;
   tmpl.content.querySelectorAll('.artifact').forEach(div => {
-    const kind = div.dataset.kind;
-    const mime = div.dataset.mime;
-    const name = div.dataset.name;
-    const b64  = div.dataset.b64;
-    const dataUri = `data:${mime};base64,${b64}`;
+    const kind = div.dataset.kind || 'file';
+    const mime = div.dataset.mime || 'text/plain';
+    const name = div.dataset.name || 'file';
+    const b64  = div.dataset.b64 || '';
+    
     let node;
     if (mime.startsWith('image/')) {
+      const dataUri = `data:${mime};base64,${b64}`;
       node = document.createElement('div');
       node.className = 'artifact-image';
       const img = document.createElement('img');
@@ -376,15 +415,88 @@ function expandArtifacts(html) {
       cap.textContent = `${name} (${kind})`;
       node.append(img, cap);
     } else {
-      node = document.createElement('a');
-      node.className = 'artifact-file';
-      node.href = dataUri;
-      node.download = name;
-      node.textContent = `⬇ ${name} (${mime})`;
+      const blob = b64toBlob(b64, mime);
+      const blobUrl = URL.createObjectURL(blob);
+      node = document.createElement('div');
+      node.className = 'artifact-file-card';
+      
+      const icon = (kind === 'csv' || kind === 'tsv') ? '📊' :
+                   kind === 'json' ? '🏷️' :
+                   (kind === 'md' || kind === 'text') ? '📝' :
+                   kind === 'pdf' ? '📑' : '📁';
+      
+      node.innerHTML = `
+        <div class="artifact-file-left">
+          <span class="artifact-file-icon">${icon}</span>
+          <div class="artifact-file-meta">
+            <span class="artifact-file-name">${escapeHtml(name)}</span>
+            <span class="muted small">${escapeHtml(kind.toUpperCase())} · ${escapeHtml(mime)}</span>
+          </div>
+        </div>
+        <div class="artifact-file-actions">
+          <a class="artifact-action-btn" href="${blobUrl}" target="_blank" rel="noopener noreferrer" title="Open and view in browser tab">Open</a>
+          <a class="artifact-action-btn download" href="${blobUrl}" download="${escapeHtml(name)}" title="Download file">Download</a>
+        </div>
+      `;
     }
     div.replaceWith(node);
   });
-  // Run syntax highlighting on <pre><code> blocks that aren't <pre> for tool inputs (those are pre-marked)
-  tmpl.content.querySelectorAll('pre code').forEach(el => { try { hljs.highlightElement(el); } catch {} });
   return tmpl.innerHTML;
+}
+
+// Enhance code blocks with syntax highlighting and a sleek copy button
+function enhanceCodeBlocks(root) {
+  if (!root) return;
+  
+  root.querySelectorAll('pre code').forEach((codeBlock) => {
+    // 1. Syntax highlighting
+    if (!codeBlock.dataset.highlighted && window.hljs) {
+      try {
+        hljs.highlightElement(codeBlock);
+      } catch (e) {}
+    }
+
+    const pre = codeBlock.parentElement;
+    if (!pre || pre.querySelector('.copy-code-btn')) return;
+
+    // 2. Add copy button
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'copy-code-btn';
+    copyBtn.type = 'button';
+    copyBtn.innerHTML = `
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+      </svg>
+      <span>Copy</span>
+    `;
+
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const textToCopy = codeBlock.innerText.replace(/\n$/, '');
+      navigator.clipboard.writeText(textToCopy).then(() => {
+        copyBtn.classList.add('copied');
+        copyBtn.innerHTML = `
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+          <span>Copied!</span>
+        `;
+        setTimeout(() => {
+          copyBtn.classList.remove('copied');
+          copyBtn.innerHTML = `
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <span>Copy</span>
+          `;
+        }, 2000);
+      }).catch(err => {
+        console.error('Copy failed', err);
+      });
+    });
+
+    pre.appendChild(copyBtn);
+  });
 }
