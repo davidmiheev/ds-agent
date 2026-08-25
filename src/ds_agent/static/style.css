@@ -111,8 +111,13 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .artifact-file:hover { background: var(--bg); text-decoration: none; }
 
 .composer { display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); }
-.composer textarea { flex: 1; }
-.composer button { align-self: flex-end; }
+.composer-main { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.composer-main textarea { width: 100%; }
+.composer-btns { display: flex; flex-direction: column; gap: 6px; justify-content: flex-end; }
+.upload-row { display: flex; align-items: center; gap: 6px; }
+.upload-btn { display: inline-flex; align-items: center; justify-content: center; padding: 6px 10px; cursor: pointer; font-size: 14px; }
+.upload-btn:hover { background: var(--bg-2); }
+button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 
 .spinner {
   display: inline-block; width: 10px; height: 10px;

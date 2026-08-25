@@ -23,6 +23,9 @@ function chatApp() {
     lastUsage: null,
     // Context-window fill (from /v1/sessions/{id}/context)
     contextPct: 0,
+    // Dataset upload state
+    uploading: false,
+    uploadedPath: '',
     // track per-message streaming text so the assistant block keeps updating
     _activeAssistantIdx: -1,
     _activeToolIdx: -1,
@@ -298,6 +301,38 @@ function chatApp() {
 
     interrupt() {
       this.ws.send(JSON.stringify({ type: 'interrupt' }));
+    },
+
+    async uploadDataset(ev) {
+      const input = ev.target;
+      const file = input.files && input.files[0];
+      input.value = '';  // allow re-uploading the same file
+      if (!file || !this.currentId) return;
+      this.uploading = true;
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        const r = await fetch(`/v1/sessions/${this.currentId}/upload`, { method: 'POST', body: fd });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) { alert(`upload failed: ${d.detail || r.status}`); return; }
+        this.uploadedPath = d.path;
+        this._loadFiles(this.currentId);
+        // Nudge the agent so it knows the dataset is ready.
+        if (this.connected && !this.busy) {
+          this.sendText(`I uploaded a dataset to ${d.path}. Take a look with ds_preview and tell me what's in it.`);
+        }
+      } finally {
+        this.uploading = false;
+      }
+    },
+
+    sendText(text) {
+      if (!this.currentId || !this.connected || this.busy) return;
+      this.messages.push({ role: 'user', html: this._renderMd(text) });
+      this.busy = true;
+      this._activeAssistantIdx = -1;
+      this.ws.send(JSON.stringify({ type: 'user', text }));
+      this._scrollDown();
     },
 
     fmtSize(n) {

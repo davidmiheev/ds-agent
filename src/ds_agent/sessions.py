@@ -40,6 +40,7 @@ def create(*, provider: str, model: str, base_url: str | None = None,
     sid = _new_id()
     workspace = core.DATA_DIR / "workspaces" / sid
     workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "data").mkdir(exist_ok=True)  # dataset upload landing zone
     row = {
         "id": sid,
         "title": title or f"New session {sid[:6]}",
@@ -230,19 +231,28 @@ def _render_session_dir(row: dict, env: dict, workspace: Path) -> None:
     else:
         global_cfg = {"mcpServers": {}}
 
+    # Path placeholders so mcp.json stays host-agnostic:
+    #   ${ROOT}     → project checkout root (where mcp.json / src/ live)
+    #   ${DATA_DIR} → ~/.coding-agent (or $CODING_AGENT_HOME)
+    #   ${VAULT:k}  → BYOK key stored under provider name k
+    _PLACEHOLDERS = {"ROOT": str(core.PROJECT_ROOT), "DATA_DIR": str(core.DATA_DIR)}
+
     def _resolve(node):
         if isinstance(node, dict):
             return {k: _resolve(v) for k, v in node.items()}
         if isinstance(node, list):
             return [_resolve(x) for x in node]
         if isinstance(node, str):
-            m = re.search(r"\$\{VAULT:(\w+)\}", node)
-            if not m:
-                return node
-            meta = crypto.load_key(m.group(1))
-            if meta and meta.get("key"):
-                return node.replace(m.group(0), meta["key"])
-            return node
+            def _sub(m):
+                inner = m.group(1)
+                if inner in _PLACEHOLDERS:
+                    return _PLACEHOLDERS[inner]
+                if inner.startswith("VAULT:"):
+                    meta = crypto.load_key(inner.split(":", 1)[1])
+                    if meta and meta.get("key"):
+                        return meta["key"]
+                return m.group(0)  # unknown / unresolved → leave as-is
+            return re.sub(r"\$\{([A-Z_]+(?::\w+)?)\}", _sub, node)
         return node
 
     mcp_servers = {**global_cfg.get("mcpServers", {}), **overrides.get("mcpServers", {})}

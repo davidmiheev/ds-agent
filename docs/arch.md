@@ -138,5 +138,7 @@ workspaces/<sid>/        per-session workspace (claude CLI cwd, .mcp.json)
   deps.
 - **research**: mostly no-auth public APIs; `HF_TOKEN` / `FRED_API_KEY`
   optional via the mcp.json env block.
-- **vault placeholders**: any mcp.json value may use `${VAULT:key}` which is
-  substituted from the encrypted key store at session-render time.
+- **placeholders**: any mcp.json value may use `${VAULT:key}` (substituted
+  from the encrypted key store), `${ROOT}` (project checkout root), or
+  `${DATA_DIR}` (`~/.coding-agent` / `$CODING_AGENT_HOME`). All are resolved
+  at session-render time, so `mcp.json` stays host-agnostic and committable.

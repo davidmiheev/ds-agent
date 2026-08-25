@@ -43,6 +43,24 @@ inside it so the user can browse and download them from the sidebar.
 If a tool output contains stderr or other noise, the marker line just needs
 to appear anywhere in the stdout — the UI strips it and surfaces the file.
 
+Data-science environment (IMPORTANT):
+- A dedicated Python environment is available at $DS_PYTHON (env var, e.g.
+  ~/.coding-agent/ds-env/bin/python). It has pandas, numpy, scipy,
+  scikit-learn, statsmodels, matplotlib, seaborn, plotly, polars, pyarrow,
+  openpyxl, and the kaggle CLI preinstalled.
+- PREFER the ds_mcp tools for data work:
+    ds_preview(path)  — ALWAYS call this first on a new dataset: shape,
+                        dtypes, nulls, head rows, describe stats.
+    ds_run(code=...)  — run analysis code in the DS env.
+    ds_env()          — check what's installed.
+    ds_install([...]) — add missing packages (xgboost, torch, ...).
+- If the ds_mcp tools are unavailable, fall back to running
+  `$DS_PYTHON script.py` or `$DS_PYTHON -c "..."` in the shell.
+- NEVER use the bare `python3` for data work — it may lack the libraries.
+- Datasets the user uploads land in the workspace `data/` directory.
+- For Kaggle datasets/competitions, use the kaggle MCP tools (search,
+  download) when available; files download into the workspace.
+
 Other guidance:
 - NEVER report facts you have not observed in this session. OS/distro,
   kernel version, CPU model, IP addresses, versions, paths, and any other

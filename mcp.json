@@ -6,22 +6,39 @@
       "timeout": 15000
     },
     "colab": {
-      "command": "/workspace/coding-agent/.venv-313/bin/python",
+      "command": "${ROOT}/.venv-313/bin/python",
       "args": ["-m", "colab_mcp.colab_server"],
       "timeout": 120000,
       "env": {
-        "PYTHONPATH": "/workspace/coding-agent/src",
+        "PYTHONPATH": "${ROOT}/src",
         "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt"
       }
     },
     "research": {
-      "command": "/workspace/coding-agent/.venv-313/bin/python",
+      "command": "${ROOT}/.venv-313/bin/python",
       "args": ["-m", "research_mcp.server"],
       "timeout": 30000,
       "env": {
-        "PYTHONPATH": "/workspace/coding-agent/src",
+        "PYTHONPATH": "${ROOT}/src",
         "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt"
       }
+    },
+    "ds": {
+      "command": "${ROOT}/.venv/bin/python",
+      "args": ["-m", "ds_mcp.server"],
+      "timeout": 600000,
+      "env": {
+        "PYTHONPATH": "${ROOT}/src",
+        "DS_PYTHON": "${DATA_DIR}/ds-env/bin/python"
+      }
+    },
+    "kaggle": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote", "https://www.kaggle.com/mcp",
+        "--header", "Authorization: Bearer ${VAULT:kaggle}"
+      ],
+      "timeout": 60000
     }
   }
 }

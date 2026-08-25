@@ -53,9 +53,28 @@
     </section>
 
     <footer class="composer">
-      <textarea x-model="input" @keydown.enter.exact.prevent="send()"
-                placeholder="ask the agent… (shift+enter for newline)" rows="3"></textarea>
-      <button @click="send()" :disabled="!canSend">send</button>
+      <div class="composer-main">
+        <div class="upload-row" x-show="uploading || uploadedPath">
+          <template x-if="uploading">
+            <span class="muted small"><span class="spinner"></span> uploading…</span>
+          </template>
+          <template x-if="!uploading && uploadedPath">
+            <span class="muted small">📎 <a :href="`/v1/sessions/${currentId}/files/raw?path=${encodeURIComponent(uploadedPath)}`" target="_blank" x-text="uploadedPath"></a>
+              <button class="ghost tiny" @click="uploadedPath=''">✕</button></span>
+          </template>
+        </div>
+        <textarea x-model="input" @keydown.enter.exact.prevent="send()"
+                  placeholder="ask the agent… (shift+enter for newline)" rows="3"></textarea>
+      </div>
+      <div class="composer-btns">
+        <label class="ghost upload-btn" title="upload a dataset (csv/parquet/xlsx/json) into data/">
+          📎
+          <input type="file" hidden
+                 accept=".csv,.tsv,.parquet,.xlsx,.xls,.json,.jsonl,.feather,.h5,.hdf5,.pkl,.pickle,.npy,.npz"
+                 @change="uploadDataset($event)" />
+        </label>
+        <button @click="send()" :disabled="!canSend">send</button>
+      </div>
     </footer>
   </main>
 

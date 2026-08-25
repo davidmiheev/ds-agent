@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Form, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Form, Depends, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -298,6 +298,68 @@ async def read_file(sid: str, path: str):
     if not full.exists() or not full.is_file():
         raise HTTPException(404, "no such file")
     return FileResponse(full)
+
+
+# ------------------------------------------------- dataset upload (data/) --
+# Accepted dataset extensions. Anything else is rejected so the workspace
+# data/ dir stays a clean, predictable landing zone for the agent.
+_DATASET_EXTS = {".csv", ".tsv", ".parquet", ".xlsx", ".xls", ".json", ".jsonl", ".feather", ".h5", ".hdf5", ".pkl", ".pickle", ".npy", ".npz"}
+_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+
+
+def _safe_dataset_name(name: str) -> str:
+    """Flatten to a single path segment, keep the extension."""
+    import re
+    base = Path(name).name or "dataset"
+    base = re.sub(r"[^A-Za-z0-9._-]", "_", base)[:150]
+    return base or "dataset"
+
+
+@app.post("/v1/sessions/{sid}/upload")
+async def upload_dataset(sid: str, file: UploadFile = File(...)):
+    """Upload a dataset into the session workspace's data/ directory.
+
+    The agent is told (system prompt) that uploaded datasets live in
+    <workspace>/data/ — it can then ds_preview() them directly.
+    """
+    row = sessions.get(sid)
+    if not row:
+        raise HTTPException(404, "no such session")
+    ws = Path(row["workspace"])
+    data_dir = ws / "data"
+    data_dir.mkdir(exist_ok=True)
+
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in _DATASET_EXTS:
+        raise HTTPException(400, f"unsupported dataset type {ext!r} — allowed: {sorted(_DATASET_EXTS)}")
+
+    name = _safe_dataset_name(file.filename or "dataset")
+    dest = data_dir / name
+    # Avoid clobbering an existing file: dataset.csv → dataset-1.csv, ...
+    n = 1
+    while dest.exists():
+        dest = data_dir / f"{Path(name).stem}-{n}{ext}"
+        n += 1
+
+    size = 0
+    try:
+        with dest.open("wb") as out:
+            while chunk := await file.read(8 * 1024 * 1024):
+                size += len(chunk)
+                if size > _MAX_UPLOAD_BYTES:
+                    out.close()
+                    dest.unlink(missing_ok=True)
+                    raise HTTPException(413, "file exceeds 2 GB limit")
+                out.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(500, f"upload failed: {e}")
+
+    rel = dest.relative_to(ws).as_posix()
+    return {"ok": True, "path": rel, "size": size,
+            "hint": f"dataset saved at data/{dest.name} — use ds_preview(path='{rel}')"}
 
 
 # ------------------------------------------------------ WebSocket bridge ---

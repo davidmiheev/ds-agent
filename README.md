@@ -28,10 +28,17 @@ LLM keys (OpenRouter, MiniMax, Anthropic, custom), and runs MCP servers
 ## MCPs (Colab, filesystem, research, anything)
 
 `~/.coding-agent/mcp.json` is the global registry. The server composes a
-per-session `.mcp.json` (with `${VAULT:provider_key}` placeholders
-substituted from the encrypted key store) and writes it into the session
-workspace before spawning the Claude CLI subprocess. Each MCP stdio
-server is then a child of the claude CLI — fully isolated to the session.
+per-session `.mcp.json` (with placeholders substituted) and writes it into
+the session workspace before spawning the Claude CLI subprocess. Each MCP
+stdio server is then a child of the claude CLI — fully isolated to the
+session.
+
+**Placeholders** (resolved at session start, so `mcp.json` stays
+host-agnostic and can be committed / shared):
+
+- `${ROOT}` — the project checkout root (where `src/` and `mcp.json` live)
+- `${DATA_DIR}` — `~/.coding-agent` (or `$CODING_AGENT_HOME`)
+- `${VAULT:provider_key}` — a BYOK key from the encrypted key store
 
 **Shipped MCPs (all three verified end-to-end):**
 
@@ -41,6 +48,11 @@ server is then a child of the claude CLI — fully isolated to the session.
   required. See "Colab MCP" section below.
 - **research** — custom `src/research_mcp/server.py`, 12 tools for academic
   / bio / quant search. See "Research MCP" section below.
+- **ds** — custom `src/ds_mcp/server.py`, runs code in a dedicated
+  data-science Python env (pandas/sklearn/plotting). See "Data-science
+  environment" section below.
+- **kaggle** — Kaggle's official remote MCP (`https://www.kaggle.com/mcp`)
+  via `mcp-remote`, token auth. See "Kaggle MCP" section below.
 
 ### Research MCP (academic / bio / quant search)
 
@@ -125,6 +137,68 @@ with `cwd` set to the per-session workspace, not the project root).
 `mcp_overrides` JSON so you can disable or swap servers per session
 without editing the global file.
 
+### Data-science environment (dedicated Python + ds MCP)
+
+The agent does data work in a **dedicated Python environment** at
+`~/.coding-agent/ds-env/` (override with `CODING_AGENT_HOME`), separate
+from the server's own venv. Install it on any Linux box:
+
+```bash
+bash scripts/install_ds_env.sh
+# optional: DS_PY_VERSION=3.11 bash scripts/install_ds_env.sh
+# optional: DS_EXTRA_PACKAGES="xgboost torch" bash scripts/install_ds_env.sh
+```
+
+Preinstalled: pandas, numpy, scipy, scikit-learn, statsmodels, matplotlib,
+seaborn, plotly, polars, pyarrow, openpyxl, kaggle CLI, requests, tqdm.
+The script is idempotent — re-run to upgrade.
+
+The **`ds` MCP** (`src/ds_mcp/server.py`) exposes that env to the agent:
+
+| Tool | What it does |
+|------|--------------|
+| `ds_env` | Interpreter path + versions of the key packages. |
+| `ds_run` | Run inline code or a script in the DS env (default 600s timeout). |
+| `ds_preview` | Load a csv/parquet/xlsx/json → shape, dtypes, nulls, head, describe. |
+| `ds_install` | pip-install extra packages into the DS env. |
+
+`DS_PYTHON` is injected into every session's env (see `providers.py`), so
+the agent can also just run `$DS_PYTHON script.py` in the shell. The system
+prompt (`agent_prompt.py`) tells the agent to prefer `ds_preview` on new
+datasets and never use bare `python3` for data work.
+
+**Dataset upload:** the composer has a 📎 button that POSTs a file to
+`/v1/sessions/{sid}/upload` (csv/tsv/parquet/xlsx/json/jsonl/feather/h5/pkl/
+npy/npz, 2 GB cap). Files land in `<workspace>/data/` and the UI auto-sends
+the agent a nudge so it previews the dataset.
+
+### Kaggle MCP (official remote server)
+
+Kaggle ships an official remote MCP at `https://www.kaggle.com/mcp`
+(see https://www.kaggle.com/docs/mcp) with tools for notebooks,
+competitions, datasets, models, and benchmarks. We bridge it with
+`mcp-remote` (stdio → HTTP) and authenticate with a Kaggle API token:
+
+```json
+"kaggle": {
+  "command": "npx",
+  "args": ["-y", "mcp-remote", "https://www.kaggle.com/mcp",
+           "--header", "Authorization: Bearer ${VAULT:kaggle}"],
+  "timeout": 60000
+}
+```
+
+**Setup:**
+1. Get a token: kaggle.com → Settings → *Create New Token* (starts with
+   `KGAT…`).
+2. In the UI: **Settings → BYOK keys → provider `kaggle`** → paste the
+   token. It's stored in the encrypted key vault as provider `kaggle`.
+3. The `${VAULT:kaggle}` placeholder in mcp.json is resolved at session
+   start, so the token never appears in the per-session `.mcp.json`
+   plaintext beyond the spawned process's env.
+
+Requires `npx` (Node.js) on the host.
+
 ## Token economy (built-in)
 
 - **Model picker** — click "+ new session" to get a dropdown of models.
@@ -159,7 +233,10 @@ uv sync
 echo 'OPENROUTER_API_KEY=sk-or-...' > .env
 echo 'APP_PASSWORD=some-strong-password' >> .env   # skip for no-password mode
 
-# 3. Run (port 8765, loads .env, sets PYTHONPATH=src/)
+# 3. (optional) dedicated data-science env for the agent (pandas/sklearn/…)
+bash scripts/install_ds_env.sh
+
+# 4. Run (port 8765, loads .env, sets PYTHONPATH=src/, auto-frees a busy port)
 bash scripts/run_server.sh
 ```
 
@@ -275,11 +352,15 @@ ds-agent/
 │   ├── colab_mcp/            # custom Colab MCP wrapper
 │   │   ├── colab_server.py
 │   │   └── setup.sh
-│   └── research_mcp/         # custom research/quant/bio search MCP
+│   ├── research_mcp/         # custom research/quant/bio search MCP
+│   │   └── server.py
+│   └── ds_mcp/               # data-science env MCP (ds_run/ds_preview/…)
 │       └── server.py
 ├── tests/                    # end-to-end smoke tests + transcripts
 ├── docs/                     # arch.md, todo.md, debug_notes.md
-├── scripts/run_server.sh     # start server on port 8765 with all envs
+├── scripts/
+│   ├── run_server.sh         # start server on port 8765 (auto-frees busy port)
+│   └── install_ds_env.sh     # create ~/.coding-agent/ds-env (pandas/sklearn/…)
 ├── deploy/Caddyfile          # reverse proxy for the public-host case
 └── mcp.json                  # global MCP registry (copy is in ~/.coding-agent)
 ```
@@ -290,3 +371,5 @@ Data lives at `~/.coding-agent/` (override with `CODING_AGENT_HOME`):
 - `keys.enc` (or `keys.json` if no `APP_PASSWORD`)
 - `sessions/<id>/` — per-session workspace + `.mcp.json` + `.claude/`
 - `workspaces/<id>/` — files the agent can read/write
+- `workspaces/<id>/data/` — uploaded datasets
+- `ds-env/` — dedicated data-science Python env (from install_ds_env.sh)

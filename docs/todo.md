@@ -35,10 +35,11 @@ Current state as of 2026-08-25, right after the repo restructure
       `sessions.py` promise hardened tool approvals when `APP_PUBLIC=1`, but
       `_spawn` always uses `permission_mode="bypassPermissions"`. Must be fixed
       before exposing on a public host.
-- [ ] **`mcp.json` contains sandbox-specific paths** (`/workspace/coding-agent`,
-      `/etc/ssl/certs/agent-identity/...`) — regenerate for this machine or
-      document that it's per-host config (the real registry lives at
-      `~/.coding-agent/mcp.json`).
+- [x] **`mcp.json` contained sandbox-specific paths** (`/workspace/coding-agent`,
+      `/home/david/...`) — now host-agnostic via `${ROOT}` / `${DATA_DIR}`
+      placeholders resolved at session-render time (see `sessions.py`
+      `_resolve`). Only the sandbox CA path (`/etc/ssl/certs/agent-identity/...`)
+      remains host-specific, which is expected.
 
 ### Medium
 - [ ] Tests in `tests/` are ad-hoc scripts (plain `asyncio.run(main())`), not
@@ -49,8 +50,8 @@ Current state as of 2026-08-25, right after the repo restructure
       (`src/colab_mcp/.venv` via `setup.sh`) and update the fallback order.
 - [x] README quick start updated to `bash scripts/run_server.sh`
       (module path `ds_agent.app:app`, port 8765).
-- [ ] `mcp.json.example` still shows the old proxy-mode colab server with
-      vault OAuth keys — update to the new `colab_mcp.colab_server` wrapper.
+- [x] `mcp.json.example` updated to the new `colab_mcp.colab_server` wrapper
+      and now uses `${ROOT}` / `${DATA_DIR}` placeholders (host-agnostic).
 - [x] `.gitignore` added (`.venv*`, `__pycache__`, `.env`).
 
 ### Low / ideas

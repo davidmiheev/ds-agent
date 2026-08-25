@@ -6,15 +6,30 @@
       "timeout": 15000
     },
     "colab": {
-      "command": "/tmp/colab-mcp/.venv-313/bin/colab-mcp",
-      "args": [],
+      "command": "${ROOT}/.venv-313/bin/python",
+      "args": ["-m", "colab_mcp.colab_server"],
       "timeout": 120000,
       "env": {
-        "PYTHONPATH": "/tmp/colab-mcp/.venv-313/lib/python3.13/site-packages",
-        "GOOGLE_OAUTH_CLIENT_ID":     "${VAULT:google_oauth_client_id}",
-        "GOOGLE_OAUTH_CLIENT_SECRET": "${VAULT:google_oauth_client_secret}",
-        "GOOGLE_OAUTH_REFRESH_TOKEN": "${VAULT:google_oauth_refresh_token}"
+        "PYTHONPATH": "${ROOT}/src",
+        "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt"
       }
+    },
+    "ds": {
+      "command": "${ROOT}/.venv/bin/python",
+      "args": ["-m", "ds_mcp.server"],
+      "timeout": 600000,
+      "env": {
+        "PYTHONPATH": "${ROOT}/src",
+        "DS_PYTHON": "${DATA_DIR}/ds-env/bin/python"
+      }
+    },
+    "kaggle": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote", "https://www.kaggle.com/mcp",
+        "--header", "Authorization: Bearer ${VAULT:kaggle}"
+      ],
+      "timeout": 60000
     }
   }
 }

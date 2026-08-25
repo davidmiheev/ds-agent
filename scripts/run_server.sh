@@ -43,6 +43,87 @@ export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 PORT="${PORT:-8765}"
 HOST="${HOST:-127.0.0.1}"
 
+# ---------------------------------------------------------------------------
+# Auto-resolve a busy port: if something is already bound to $PORT, find the
+# owning PID(s) and kill them so uvicorn can bind cleanly.
+#
+#   KILL_PORT=0  disable this behaviour (fail fast on a busy port instead)
+#
+# Uses `ss` first (present on most modern distros), then falls back to `lsof`,
+# then to a /proc scan (no external deps). Only kills listeners on $HOST:$PORT.
+# ---------------------------------------------------------------------------
+_free_port() {
+    local port="$1"
+    if [ "${KILL_PORT:-1}" = "0" ]; then
+        return 0
+    fi
+
+    # Collect PIDs listening on the port.
+    local pids=""
+    if command -v ss >/dev/null 2>&1; then
+        # ss -ltnp: listening, numeric, show process. Match ":<port>" in the
+        # local-address column. -H hides the header line.
+        pids="$(ss -ltnpH 2>/dev/null \
+            | awk -v p=":$port" '$4 ~ p"$" {print $0}' \
+            | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)"
+    fi
+    if [ -z "$pids" ] && command -v lsof >/dev/null 2>&1; then
+        pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u)"
+    fi
+    if [ -z "$pids" ] && [ -d /proc ]; then
+        # /proc fallback: parse the inode of the listening socket, then find
+        # which process holds it. Inode for port P is the hex of P in the
+        # "local_address" field of /proc/net/tcp{,6}.
+        local hex_port inodes ino fd p
+        hex_port="$(printf '%04X' "$port")"
+        inodes="$(awk -v hp=":$hex_port" '
+                    NR>1 && $2 ~ hp"$" && $4 == "0A" {print $10}' \
+                    /proc/net/tcp /proc/net/tcp6 2>/dev/null | sort -u)"
+        for ino in $inodes; do
+            for fd in /proc/[0-9]*/fd/*; do
+                if [ "$(readlink "$fd" 2>/dev/null)" = "socket:[$ino]" ]; then
+                    p="$(echo "$fd" | cut -d/ -f3)"
+                    pids="$pids $p"
+                fi
+            done
+        done
+        pids="$(echo "$pids" | tr ' ' '\n' | sort -u | grep -v '^$' | tr '\n' ' ')"
+    fi
+
+    # Nothing found → port is free (or we can't see it); nothing to do.
+    [ -z "$pids" ] && return 0
+
+    for p in $pids; do
+        # Never kill ourselves or our parent.
+        [ "$p" = "$$" ] && continue
+        [ "$p" = "$PPID" ] && continue
+        local cmd
+        cmd="$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null || echo "?")"
+        echo "==> port $port in use by PID $p: ${cmd:0:80}"
+        kill "$p" 2>/dev/null || true
+    done
+
+    # Wait up to ~5s for the socket to actually release.
+    local i
+    for i in 1 2 3 4 5; do
+        if ! (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+            echo "==> port $port freed"
+            return 0
+        fi
+        exec 3>&- 2>/dev/null || true
+        sleep 1
+    done
+
+    echo "==> port $port still busy after SIGTERM; sending SIGKILL" >&2
+    for p in $pids; do
+        [ "$p" = "$$" ] && continue
+        kill -9 "$p" 2>/dev/null || true
+    done
+    sleep 1
+}
+
+_free_port "$PORT"
+
 echo "==> ds-agent server"
 echo "    url:      http://$HOST:$PORT"
 echo "    data dir: $CODING_AGENT_HOME"
