@@ -10,8 +10,7 @@
       "args": ["-m", "colab_mcp.colab_server"],
       "timeout": 120000,
       "env": {
-        "PYTHONPATH": "${ROOT}/src",
-        "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt"
+        "PYTHONPATH": "${ROOT}/src"
       }
     },
     "research": {
@@ -19,8 +18,7 @@
       "args": ["-m", "research_mcp.server"],
       "timeout": 30000,
       "env": {
-        "PYTHONPATH": "${ROOT}/src",
-        "REQUESTS_CA_BUNDLE": "/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt"
+        "PYTHONPATH": "${ROOT}/src"
       }
     },
     "ds": {

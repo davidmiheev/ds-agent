@@ -73,11 +73,37 @@ _state = {
 def _get_creds():
     if _state["creds"] is not None:
         return _state["creds"]
-    # Try the public client shipped inside google-colab-cli first.
-    creds = _get_google_auth_credentials("")  # "" path falls back to inlined config
-    if creds is None:
+    # Non-interactive load: this runs as an MCP subprocess whose stdin is the
+    # MCP pipe, so we must NEVER fall into colab_cli's _run_remote_flow (it
+    # calls input() and blocks forever). Load the token file directly and
+    # refresh it; if that fails, raise so the caller surfaces auth_required.
+    creds = None
+    if os.path.exists(TOKEN_CONFIG_PATH):
+        try:
+            from google.oauth2.credentials import Credentials
+            creds = Credentials.from_authorized_user_file(TOKEN_CONFIG_PATH, PUBLIC_SCOPES)
+        except Exception as e:
+            LOG.warning("failed to load token from %s: %s", TOKEN_CONFIG_PATH, e)
+    if creds is not None and not creds.valid:
+        if creds.expired and creds.refresh_token:
+            try:
+                from google.auth.transport.requests import Request
+                creds.refresh(Request())
+                # persist the refreshed token
+                try:
+                    with open(TOKEN_CONFIG_PATH, "w") as f:
+                        f.write(creds.to_json())
+                except Exception:
+                    pass
+            except Exception as e:
+                LOG.warning("token refresh failed: %s", e)
+                creds = None
+        else:
+            creds = None
+    if creds is None or not creds.valid:
         raise RuntimeError(
-            "No Colab credentials found. Call `colab_auth` to start the OAuth flow."
+            "No valid Colab credentials. Run src/colab_mcp/auth_once.py once, "
+            "or call `colab_auth` with an authorization code."
         )
     _state["creds"] = creds
     return creds
@@ -86,7 +112,10 @@ def _get_client():
     if _state["client"] is not None:
         return _state["client"]
     creds = _get_creds()
-    _state["client"] = Client(Prod(), creds)
+    # Client expects a session with .request() — wrap raw Credentials in an
+    # AuthorizedSession (matches colab_cli.auth.get_credentials()).
+    from google.auth.transport.requests import AuthorizedSession
+    _state["client"] = Client(Prod(), AuthorizedSession(creds))
     return _state["client"]
 
 def _active_session() -> Optional[SessionState]:
@@ -238,7 +267,8 @@ def _complete_oauth(code: str) -> dict:
     with open(TOKEN_CONFIG_PATH, "w") as f:
         f.write(creds.to_json())
     _state["creds"] = creds
-    _state["client"] = Client(Prod(), creds)
+    from google.auth.transport.requests import AuthorizedSession
+    _state["client"] = Client(Prod(), AuthorizedSession(creds))
     _state["pending_auth_url"] = None
     return {"status": "authenticated"}
 
@@ -406,9 +436,17 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
-        # If it's a credential error, hint at the auth flow.
+        # If it's a credential error, hint at the auth flow. Don't mistake
+        # programming bugs (AttributeError etc.) for auth failures.
         msg = str(e)
-        if "credentials" in msg.lower() or "oauth" in msg.lower() or "No Colab credentials" in msg:
+        is_auth_err = (
+            "has no attribute" not in msg
+            and ("no colab credentials" in msg.lower()
+                 or "oauth" in msg.lower()
+                 or "invalid_grant" in msg
+                 or "token" in msg.lower() and "expired" in msg.lower())
+        )
+        if is_auth_err:
             try:
                 url = _start_oauth()
                 sys.stderr.write(f"\n[colab-mcp] Auth needed. Visit:\n  {url}\n")
