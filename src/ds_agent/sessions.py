@@ -84,9 +84,23 @@ def delete(sid: str) -> None:
 
 
 async def get_or_start(sid: str) -> ActiveSession:
-    """Return the active session, spawning the SDK client if needed."""
+    """Return the active session, spawning the SDK client if needed.
+
+    If a cached session's CLI subprocess has died (crash, or killed to pick
+    up a changed MCP config), respawn the client so the caller gets a usable
+    connection instead of writing into a dead pipe.
+    """
     if sid in _active:
-        return _active[sid]
+        active = _active[sid]
+        if client_alive(active):
+            return active
+        # Dead CLI — respawn under the lock so concurrent callers don't race.
+        lock = _active_locks.setdefault(sid, asyncio.Lock())
+        async with lock:
+            if sid in _active and client_alive(_active[sid]):
+                return _active[sid]
+            await respawn(_active[sid])
+            return _active[sid]
     lock = _active_locks.setdefault(sid, asyncio.Lock())
     async with lock:
         if sid in _active:
