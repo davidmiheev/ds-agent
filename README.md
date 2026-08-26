@@ -82,7 +82,11 @@ Powered by `src/colab_mcp/colab_server.py` wrapping `google-colab-cli`, enabling
 | `colab_stop` | Terminate and release the remote runtime. |
 
 **Auth Flow**:
-The agent initiates `colab_auth()`, returns a Google OAuth authorization URL, you sign in once and paste the verification code back via `colab_auth(code=...)`. Tokens are securely cached at `~/.config/colab-cli/token.json` for future sessions.
+The agent initiates `colab_auth()`, returns a Google OAuth authorization URL, you sign in once and paste the verification code back via `colab_auth(code=...)`. Tokens are securely cached at `~/.config/colab-cli/token.json` for future sessions. Alternatively, run the CLI helper on the server:
+```bash
+# Interactive one-time OAuth (run as the service user, e.g. agent)
+su - agent -c "cd /opt/coding-agent && src/colab_mcp/.venv/bin/python src/colab_mcp/auth_once.py"
+```
 
 ### 3. Dedicated Data Science Environment & MCP (`ds_mcp`)
 Isolates analytical workloads in a dedicated Python environment located at `~/.coding-agent/ds-env/` (pre-populated with top scientific computing libraries):
@@ -309,8 +313,13 @@ systemctl status coding-agent      # service state
 journalctl -u coding-agent -f      # live logs
 ```
 
-> **Note:** the Colab MCP needs a one-time Google OAuth (`colab_auth` tool in a
-> session) on first use.
+> **Note on Colab OAuth:** The Colab MCP needs a one-time Google OAuth authorization on first use. You can do this in two ways:
+> 1. **In-Session (Agent-driven):** Ask the agent "authorize colab" or call the `colab_auth` tool. The agent returns a Google OAuth link. Open it in any browser, copy the verification code Google gives you, and reply with the code.
+> 2. **CLI (on the server):** Run the interactive helper as the `agent` user:
+>    ```bash
+>    su - agent -c "cd /opt/coding-agent && src/colab_mcp/.venv/bin/python src/colab_mcp/auth_once.py"
+>    ```
+> The token is stored in `/home/agent/.config/colab-cli/token.json` and refreshes automatically.
 
 ### Manual / HTTPS Deployment
 
