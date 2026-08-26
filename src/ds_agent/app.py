@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import time
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Form, Depends, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
@@ -95,15 +96,46 @@ async def login_page(request: Request):
     return templates.TemplateResponse(request, "login.html", {})
 
 
+# ------------------------------------------------- login rate limiting (brute-force defense) --
+# In-memory per-IP failure tracking: max 5 failed logins per IP per hour.
+# Process-local (fine for single-process uvicorn); resets on restart.
+LOGIN_MAX_FAILURES = 5
+LOGIN_WINDOW_SECONDS = 3600
+_login_failures: dict[str, list[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    """Best-effort client IP: honor X-Forwarded-For (set by Caddy) else socket peer."""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _login_blocked(ip: str) -> bool:
+    now = time.time()
+    recent = [t for t in _login_failures.get(ip, []) if now - t < LOGIN_WINDOW_SECONDS]
+    _login_failures[ip] = recent
+    return len(recent) >= LOGIN_MAX_FAILURES
+
+
 @app.post("/login")
 async def login_submit(request: Request, password: str = Form(...)):
     if not core.APP_PASSWORD:
         return RedirectResponse("/", status_code=303)
+    ip = _client_ip(request)
+    if _login_blocked(ip):
+        return templates.TemplateResponse(
+            request, "login.html", {"error": "too many failed attempts, try again later"},
+            status_code=429,
+        )
     import hmac
     if not hmac.compare_digest(password, core.APP_PASSWORD):
+        _login_failures.setdefault(ip, []).append(time.time())
         return templates.TemplateResponse(
             request, "login.html", {"error": "wrong password"}, status_code=401
         )
+    _login_failures.pop(ip, None)  # success → clear the counter
     tok = db.make_cookie_token()
     resp = RedirectResponse("/", status_code=303)
     kwargs = {"httponly": True, "samesite": "lax"}

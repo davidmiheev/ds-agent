@@ -244,7 +244,8 @@ ds-agent/
 ├── docs/                     # Architecture notes (arch.md) and roadmap (todo.md)
 ├── scripts/
 │   ├── run_server.sh         # Startup script on port 8765 (with auto port-reclaim)
-│   └── install_ds_env.sh     # Installer for dedicated ~/.coding-agent/ds-env
+│   ├── install_ds_env.sh     # Installer for dedicated ~/.coding-agent/ds-env
+│   └── deploy_remote.sh      # One-command remote VPS deploy (app + MCPs + systemd)
 ├── tests/                    # End-to-end WebSocket tests & MCP verification
 ├── mcp.json                  # Global MCP registry configuration
 └── pyproject.toml            # Project dependencies and packaging definition
@@ -271,9 +272,49 @@ uv run python tests/test_ds2.py "$SID"
 
 ---
 
-## 🌐 Production Deployment
+## 🚀 One-Command Remote Deployment
 
-To host `ds-agent` on a public VPS with HTTPS:
+Deploy a fully working agent (app + all 5 MCP servers + systemd service) to any
+Ubuntu/Debian VPS with a single command:
+
+```bash
+# from the project root (a .env with your keys must exist)
+bash scripts/deploy_remote.sh <REMOTE_IP> <PATH_TO_SSH_KEY>
+
+# e.g.
+bash scripts/deploy_remote.sh 203.0.113.10 ~/.ssh/id_ed25519_1
+```
+
+Both arguments are optional — the script asks for them interactively if omitted.
+Optional env overrides: `REMOTE_USER` (default `root`), `REMOTE_PORT` (default `22`),
+`REMOTE_DIR` (default `/opt/coding-agent`), `APP_PORT` (default `8765`).
+
+The script:
+1. Copies the project (rsync) and `.env` (chmod 600) to the host.
+2. Installs Node.js (for the `filesystem` + `kaggle` MCPs) if missing.
+3. Creates a non-root `agent` user — the agent CLI refuses
+   `--dangerously-skip-permissions` under root, so the service must not run as root.
+4. Installs `uv`, builds the app venv (`uv sync`), the Colab MCP venv, and the
+   data-science env (`ds-env`).
+5. Installs the live MCP config to `~/.coding-agent/mcp.json`.
+6. Installs and starts the `coding-agent` systemd service (auto-start on boot,
+   restart on failure).
+7. Health-checks `/healthz` and verifies every MCP server with an initialize handshake.
+
+Then open `http://<REMOTE_IP>:8765` and log in with your `APP_PASSWORD`.
+
+Useful on the remote:
+```bash
+systemctl status coding-agent      # service state
+journalctl -u coding-agent -f      # live logs
+```
+
+> **Note:** the Colab MCP needs a one-time Google OAuth (`colab_auth` tool in a
+> session) on first use.
+
+### Manual / HTTPS Deployment
+
+To host `ds-agent` on a public VPS with HTTPS via Caddy:
 
 ```bash
 # Set public mode and a strong password in .env
@@ -288,3 +329,6 @@ sudo systemctl reload caddy
 # Launch agent server
 bash scripts/run_server.sh
 ```
+
+> ⚠️ `APP_PUBLIC=1` sets `Secure` cookies, so it only works behind TLS (e.g. Caddy
+> with a real domain). On a raw IP without TLS keep `APP_PUBLIC=0`.

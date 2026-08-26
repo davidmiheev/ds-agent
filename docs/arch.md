@@ -272,3 +272,68 @@ ds-agent/
 ### 3. History Reconstruction on Refresh
 - When a user refreshes the browser, `GET /v1/sessions/{sid}/history` parses the on-disk SDK JSONL transcript.
 - The parser reconstructs full message history and re-evaluates all `__ARTIFACT__` markers so embedded charts persist seamlessly across browser sessions.
+
+---
+
+## 🚀 9. Remote Deployment (`scripts/deploy_remote.sh`)
+
+One-command deployment of a fully working agent (app + all MCP servers + systemd
+service) to an Ubuntu/Debian VPS:
+
+```bash
+bash scripts/deploy_remote.sh <REMOTE_IP> <PATH_TO_SSH_KEY>
+# both args optional — asked interactively if omitted
+```
+
+### Deployment topology
+
+```
+┌────────────────────────────── remote VPS ──────────────────────────────┐
+│                                                                        │
+│  systemd: coding-agent.service                                         │
+│    User=agent (NON-ROOT — see below)                                   │
+│    EnvironmentFile=/opt/coding-agent/.env                              │
+│    PYTHONPATH=/opt/coding-agent/src                                    │
+│    └─ uvicorn ds_agent.app:app --host 0.0.0.0 --port 8765             │
+│         │                                                              │
+│         ├─ /opt/coding-agent/.venv            (app deps, uv sync)      │
+│         ├─ /opt/coding-agent/src/colab_mcp/.venv  (colab MCP, mcp<2)   │
+│         ├─ /home/agent/.coding-agent/ds-env   (pandas/sklearn/…)       │
+│         ├─ /home/agent/.coding-agent/mcp.json (live MCP registry)      │
+│         └─ node/npx (filesystem + kaggle MCP bridges)                  │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key constraints (why the script does what it does)
+
+1. **Non-root service user.** The agent SDK spawns the CLI with
+   `permission_mode="bypassPermissions"` (`--dangerously-skip-permissions`),
+   which the CLI hard-refuses under root/sudo. The service therefore runs as a
+   dedicated `agent` system user that owns `/opt/coding-agent` and
+   `/home/agent/.coding-agent`.
+2. **`PYTHONPATH=src` is mandatory** — the project is a virtual (non-packaged)
+   layout; without it uvicorn fails with `ModuleNotFoundError: ds_agent`.
+3. **Live MCP config lives in the data dir** (`~/.coding-agent/mcp.json`), not
+   the project root. The script installs it there; per-session `.mcp.json`
+   files are rendered from it on first WebSocket connect, with
+   `${ROOT}` / `${DATA_DIR}` / `${VAULT:key}` placeholders resolved.
+4. **MCP version split.** `research_mcp` / `ds_mcp` use the mcp 2.x API and run
+   from the app venv; `colab_mcp` uses the mcp 1.x API and needs its own venv
+   (pinned `mcp[cli]<2`) built by `src/colab_mcp/setup.sh`.
+5. **`APP_PUBLIC` and TLS.** `APP_PUBLIC=1` sets `Secure` cookies, so it only
+   works behind TLS (Caddy + real domain, see `deploy/Caddyfile`). On a raw IP
+   without TLS keep `APP_PUBLIC=0`.
+6. **Login brute-force defense.** `POST /login` is rate-limited per client IP
+   (5 failures/hour → 429). The counter is in-memory and resets on service
+   restart; the IP is taken from `X-Forwarded-For` when behind a proxy.
+
+### Operations
+
+```bash
+systemctl status coding-agent     # service state
+journalctl -u coding-agent -f     # live logs
+systemctl restart coding-agent    # restart (also clears login lockouts)
+```
+
+Re-running `deploy_remote.sh` is idempotent: it re-syncs code, upgrades venvs
+in place, and rewrites the systemd unit.
