@@ -63,9 +63,17 @@ rsync -az --delete \
     --exclude '__pycache__' --exclude '.coding-agent' \
     ./ "${REMOTE_USER}@${REMOTE_IP}:${REMOTE_DIR}/"
 
-echo "==> [2/6] Copying .env (chmod 600)"
+echo "==> [2/6] Copying .env and local credentials (chmod 600)"
 $SCP "$ROOT/.env" "${REMOTE_USER}@${REMOTE_IP}:${REMOTE_DIR}/.env"
 $SSH "chmod 600 ${REMOTE_DIR}/.env"
+
+# If local Colab OAuth token exists, copy it over so remote avoids OAuth IP/redirect mismatch
+if [ -f "$HOME/.config/colab-cli/token.json" ]; then
+    echo "    Found local Colab token -> copying to remote"
+    $SSH "mkdir -p /home/agent/.config/colab-cli && chown -R ${REMOTE_USER}:${REMOTE_USER} /home/agent/.config 2>/dev/null || true"
+    $SCP "$HOME/.config/colab-cli/token.json" "${REMOTE_USER}@${REMOTE_IP}:/tmp/colab_token.json"
+    $SSH "mkdir -p /home/agent/.config/colab-cli && mv /tmp/colab_token.json /home/agent/.config/colab-cli/token.json && chown -R agent:agent /home/agent/.config/colab-cli && chmod 600 /home/agent/.config/colab-cli/token.json" 2>/dev/null || true
+fi
 
 # ------------------------------------------------------- 3-8. remote setup --
 echo "==> [3/6] Remote setup: node, agent user, venvs, MCPs, systemd"
