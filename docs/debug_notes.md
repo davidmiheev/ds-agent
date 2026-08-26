@@ -36,7 +36,24 @@ the same symptoms.
   cert verification. Fix by setting `REQUESTS_CA_BUNDLE` (and/or
   `CURL_CA_BUNDLE`) in the mcp.json env block to the gateway CA path, e.g.
   `/etc/ssl/certs/agent-identity/sandbox-gateway-ca.crt`. `research_mcp`
-  reads these explicitly (`server.py` `_ssl_ctx()`).
+  reads these explicitly (`server.py` `_ssl_ctx()`). **Caveat: the CA file
+  must actually exist.** Pointing at a missing file makes every requests
+  call raise `OSError: Could not find a suitable TLS CA certificate bundle`
+  — which (for colab) cascaded into the auth hang below. On this host the
+  file doesn't exist, so the entries were removed (2026-08-26).
+- **Never call `input()` in an MCP stdio server.** The subprocess's stdin is
+  the MCP JSON-RPC pipe, so a blocking `input()` (e.g. colab_cli's
+  `_run_remote_flow` OAuth prompt) hangs the tool call until the client's
+  timeout (symptom: `tool "colab_sessions" timed out after 120s`).
+  `colab_server._get_creds()` therefore loads `token.json` directly and
+  refreshes it non-interactively; interactive auth is done once via
+  `src/colab_mcp/auth_once.py`.
+- **colab_cli's `Client(env, session)` wants a session, not Credentials.**
+  Passing raw `google.oauth2.credentials.Credentials` gives
+  `'Credentials' object has no attribute 'request'` on the first API call
+  (tools that don't hit the network, like `colab_status`, still "work").
+  Wrap with `google.auth.transport.requests.AuthorizedSession(creds)`,
+  exactly like `colab_cli.auth.get_credentials()` does.
 - `WaitForMcpServers` reports `ready: false` on the first call right after
   session start — normal; the agent should call it again. In transcripts,
   `filesystem` (npx cold start) is often "still connecting" while `colab` /
