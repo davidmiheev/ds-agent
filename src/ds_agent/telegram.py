@@ -20,10 +20,12 @@ Features:
 from __future__ import annotations
 
 import asyncio
+import html
 import io
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 import urllib.parse
@@ -40,8 +42,103 @@ TELEGRAM_ALLOWED_USERS = [
     if uid.strip().isdigit()
 ]
 
-# Track current active session_id per Telegram chat_id
-_chat_sessions: dict[int, str] = {}
+def markdown_to_telegram_html(text: str) -> str:
+    """Convert standard LLM Markdown into clean Telegram-compatible HTML.
+    
+    Supports:
+    - Code blocks (```lang ... ``` -> <pre><code class="language-lang">...</code></pre>)
+    - Inline code (`code` -> <code>...</code>)
+    - Bold (**bold** or __bold__ -> <b>bold</b>)
+    - Italic (*italic* or _italic_ -> <i>italic</i>)
+    - Strikethrough (~~text~~ -> <s>text</s>)
+    - Markdown links ([text](url) -> <a href="url">text</a>)
+    - Blockquotes (> text -> <blockquote>text</blockquote>)
+    - Headers (# Header -> <b>Header</b>)
+    """
+    if not text:
+        return ""
+
+    # 1. Extract and protect code blocks
+    code_blocks: list[str] = []
+    def _save_code_block(match):
+        lang = match.group(1) or ""
+        code_content = match.group(2)
+        escaped_code = html.escape(code_content)
+        idx = len(code_blocks)
+        if lang:
+            tag = f'<pre><code class="language-{html.escape(lang)}">{escaped_code}</code></pre>'
+        else:
+            tag = f'<pre>{escaped_code}</pre>'
+        code_blocks.append(tag)
+        return f"%%CODEBLOCK{idx}%%"
+
+    # Match ```lang\ncode```
+    text = re.sub(r'```(?:([a-zA-Z0-9_\-\+]+)\n)?(.*?)```', _save_code_block, text, flags=re.DOTALL)
+
+    # 2. Extract and protect inline code
+    inline_codes: list[str] = []
+    def _save_inline_code(match):
+        code_content = match.group(1)
+        escaped = html.escape(code_content)
+        idx = len(inline_codes)
+        inline_codes.append(f"<code>{escaped}</code>")
+        return f"%%INLINECODE{idx}%%"
+
+    text = re.sub(r'`([^`\n]+)`', _save_inline_code, text)
+
+    # 3. Escape general HTML characters
+    text = html.escape(text)
+
+    # 4. Headers: # Header -> <b>Header</b>
+    text = re.sub(r'^(?:#{1,6})\s+(.+)$', r'<b>\1</b>', text, flags=re.MULTILINE)
+
+    # 5. Bold: **text** or __text__ -> <b>text</b>
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    text = re.sub(r'__(.+?)__', r'<b>\1</b>', text)
+
+    # 6. Italic: *text* or _text_ -> <i>text</i> (avoiding underscore in words)
+    text = re.sub(r'(?<!\w)\*([^\*\n]+?)\*(?!\w)', r'<i>\1</i>', text)
+    text = re.sub(r'(?<!\w)_([^_\n]+?)_(?!\w)', r'<i>\1</i>', text)
+
+    # 7. Strikethrough: ~~text~~ -> <s>text</s>
+    text = re.sub(r'~~(.+?)~~', r'<s>\1</s>', text)
+
+    # 8. Links: [text](url) -> <a href="url">text</a>
+    # Note: text and url are html-escaped at this stage (&amp;, &quot;, etc.)
+    text = re.sub(r'\[([^\]]+)\]\((https?://[^\)]+)\)', r'<a href="\2">\1</a>', text)
+
+    # 9. Restore code blocks & inline code
+    for idx, tag in enumerate(inline_codes):
+        text = text.replace(f"%%INLINECODE{idx}%%", tag)
+
+    for idx, tag in enumerate(code_blocks):
+        text = text.replace(f"%%CODEBLOCK{idx}%%", tag)
+
+    return text
+
+
+def split_message_chunks(text: str, max_chunk_size: int = 4000) -> list[str]:
+    """Split long text into chunks, trying to break on newlines/paragraphs."""
+    if len(text) <= max_chunk_size:
+        return [text] if text else ["(empty)"]
+
+    chunks = []
+    lines = text.splitlines(keepends=True)
+    cur = []
+    cur_len = 0
+
+    for line in lines:
+        if cur_len + len(line) > max_chunk_size and cur:
+            chunks.append("".join(cur))
+            cur = [line]
+            cur_len = len(line)
+        else:
+            cur.append(line)
+            cur_len += len(line)
+
+    if cur:
+        chunks.append("".join(cur))
+    return chunks
 # Lock per chat so turns don't overlap
 _chat_locks: dict[int, asyncio.Lock] = {}
 
@@ -94,9 +191,17 @@ class TelegramAPI:
     async def call(self, method: str, data: dict | None = None, files: dict | None = None) -> dict:
         return await asyncio.to_thread(self._request, method, data, files)
 
-    async def send_message(self, chat_id: int, text: str, parse_mode: str = "Markdown", reply_markup: dict | None = None) -> dict:
-        # Split message if exceeds Telegram 4096 char limit
-        chunks = [text[i:i+4000] for i in range(0, len(text), 4000)] or ["(empty)"]
+    async def send_message(self, chat_id: int, text: str, parse_mode: str = "HTML", reply_markup: dict | None = None) -> dict:
+        # Convert Markdown to HTML if parse_mode is HTML or Markdown
+        formatted_text = text
+        if parse_mode == "HTML":
+            formatted_text = markdown_to_telegram_html(text)
+        elif parse_mode == "Markdown":
+            # For backward compatibility if someone passes raw Markdown
+            formatted_text = markdown_to_telegram_html(text)
+            parse_mode = "HTML"
+
+        chunks = split_message_chunks(formatted_text, max_chunk_size=4000)
         res = {}
         for idx, chunk in enumerate(chunks):
             payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
@@ -108,6 +213,9 @@ class TelegramAPI:
 
             res = await self.call("sendMessage", payload)
             if not res.get("ok") and parse_mode:
+                # If HTML/Markdown parse fails for any edge case, fallback to plain raw text chunk
+                raw_chunk = split_message_chunks(text, max_chunk_size=4000)[idx] if idx < len(split_message_chunks(text, max_chunk_size=4000)) else chunk
+                payload["text"] = raw_chunk
                 payload.pop("parse_mode", None)
                 res = await self.call("sendMessage", payload)
         return res
