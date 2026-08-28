@@ -110,7 +110,7 @@
       <div style="margin: 12px 0;">
         <div style="display:flex; justify-content:space-between; margin-bottom: 6px; font-size: 13px;">
           <span><strong>Total Fill:</strong> <span x-text="`${contextPct}%`"></span></span>
-          <span class="muted" x-text="`${(contextData?.totalTokens || 0).toLocaleString()} / ${(contextData?.maxTokens || contextData?.rawMaxTokens || 200000).toLocaleString()} tokens`"></span>
+          <span class="muted" x-text="`${(contextData?.totalTokens || 0).toLocaleString()} / ${(contextData?.maxTokens || contextData?.rawMaxTokens || contextData?.contextWindow || '—').toLocaleString()} tokens`"></span>
         </div>
         <div class="ctx-bar" style="width: 100%; height: 12px; margin-bottom: 14px;">
           <div class="ctx-fill" :style="`width:${contextPct}%`"></div>
