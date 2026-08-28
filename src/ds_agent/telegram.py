@@ -154,7 +154,8 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
             "🤖 *Welcome to ds-agent Telegram Bridge!*\n\n"
             "You can interact directly with your Data Science agent here.\n\n"
             "*Commands:*\n"
-            "• `/new` - Create a new session\n"
+            "• `/new [model_id]` - Create a new session (optionally specify model)\n"
+            "• `/models` - List popular model IDs to use with `/new`\n"
             "• `/sessions` - List existing sessions\n"
             "• `/switch <id>` - Switch to an existing session\n"
             "• `/compact` - Compact context window\n"
@@ -165,10 +166,36 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
         await api.send_message(chat_id, msg)
         return
 
+    if cmd == "/models":
+        lines = ["*Available Models:*"]
+        for prov, mlist in model_catalog.CURATED.items():
+            if prov == "custom":
+                continue
+            lines.append(f"\n*{prov.upper()}:*")
+            for m in mlist:
+                if m["id"]:
+                    lines.append(f"• `{m['id']}` - _{m['label']}_")
+        lines.append("\nUse `/new <model_id>` to start a session with that model.")
+        await api.send_message(chat_id, "\n".join(lines))
+        return
+
     if cmd == "/new":
+        specified_model = parts[1].strip() if len(parts) > 1 else ""
         provs = crypto.list_providers()
+
         provider = "openrouter" if "openrouter" in provs else (provs[0] if provs else "openrouter")
-        model = "anthropic/claude-sonnet-4-5" if provider == "openrouter" else "claude-3-7-sonnet"
+        if specified_model:
+            model = specified_model
+            # Determine provider if format is provider/model or known provider
+            if "/" in model:
+                provider = "openrouter"
+            elif model.startswith("claude-"):
+                provider = "anthropic" if "anthropic" in provs else "openrouter"
+            elif model.lower().startswith("minimax"):
+                provider = "minimax" if "minimax" in provs else "openrouter"
+        else:
+            model = "anthropic/claude-sonnet-4-5" if provider == "openrouter" else "claude-3-7-sonnet"
+
         sess = sessions.create(
             provider=provider,
             model=model,
