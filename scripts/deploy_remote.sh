@@ -104,7 +104,7 @@ echo "--- [c] uv for the agent user"
 su - agent -c 'command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh'
 
 echo "--- [d] app venv + dependencies (uv sync)"
-su - agent -c "export PATH=\"/home/agent/.local/bin:\$PATH\"; cd \"\$REMOTE_DIR\" && uv venv .venv && uv sync"
+su - agent -c "export PATH=\"/home/agent/.local/bin:\$PATH\"; cd \"\$REMOTE_DIR\" && ([ -d .venv ] || uv venv .venv) && uv sync"
 
 echo "--- [e] colab MCP venv"
 su - agent -c "export PATH=\"/home/agent/.local/bin:\$PATH\"; bash \"\$REMOTE_DIR/src/colab_mcp/setup.sh\""
