@@ -42,6 +42,16 @@ TELEGRAM_ALLOWED_USERS = [
     if uid.strip().isdigit()
 ]
 
+# Track current active session_id per Telegram chat_id
+_chat_sessions: dict[int, str] = {}
+# Lock per chat so turns don't overlap
+_chat_locks: dict[int, asyncio.Lock] = {}
+
+
+def is_configured() -> bool:
+    return bool(TELEGRAM_BOT_TOKEN)
+
+
 def markdown_to_telegram_html(text: str) -> str:
     """Convert standard LLM Markdown into clean Telegram-compatible HTML.
     
@@ -429,6 +439,8 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
                 f"• *Workspace:* `{row['workspace']}`"
             )
             await api.send_message(chat_id, msg)
+        else:
+            await api.send_message(chat_id, "❌ No active session found. Use `/new` or select a model to start a session.")
         return
 
 
