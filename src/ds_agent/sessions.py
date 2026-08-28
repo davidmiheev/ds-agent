@@ -297,7 +297,7 @@ async def send_user_message(active: ActiveSession, text: str) -> None:
 
     Proactively auto-compacts first if context is >= 95% full.
     """
-    db.touch_session(active.id)
+    db.touch_session(active.session_id)
 
     # Proactive auto-compact: if context is >= 95% full, trigger compact before query
     try:
@@ -305,7 +305,7 @@ async def send_user_message(active: ActiveSession, text: str) -> None:
         pct = float(usage.get("percentage", 0) or 0)
         if pct >= 95.0:
             import logging
-            logging.getLogger("ds_agent.sessions").info("Auto-compacting session %s (context at %.1f%%)", active.id, pct)
+            logging.getLogger("ds_agent.sessions").info("Auto-compacting session %s (context at %.1f%%)", active.session_id, pct)
             await active.client.query("/compact")
     except Exception:
         pass
