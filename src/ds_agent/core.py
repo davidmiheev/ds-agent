@@ -14,6 +14,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DB_PATH = DATA_DIR / "state.db"
 KEYS_PATH = DATA_DIR / "keys.enc"
+VAULT_KEY_PATH = DATA_DIR / ".vault_key"
 MCP_CONFIG_PATH = DATA_DIR / "mcp.json"
 
 # Dedicated data-science Python env (created by scripts/install_ds_env.sh).

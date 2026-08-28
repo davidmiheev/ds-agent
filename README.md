@@ -118,6 +118,12 @@ A unified search server with 12 tools for literature and biological/economic dat
 - **Machine Learning & Data**: `hf_search_models`, `hf_search_datasets`.
 - **Bioinformatics**: `uniprot_search`, `pdb_search`, `ensembl_search`.
 
+### 5. Telegram Bot Integration
+Interact directly with the agent from Telegram on mobile or desktop:
+- Set `TELEGRAM_BOT_TOKEN="<token>"` and optionally `TELEGRAM_ALLOWED_USERS="<id1>,<id2>"` in `.env`.
+- Supports `/new`, `/sessions`, `/switch <id>`, `/compact`, `/stop`, and `/status`.
+- Automatically renders text turns and attaches generated image plots/artifacts.
+
 ---
 
 ## 📈 Quantitative Research & Financial Analysis

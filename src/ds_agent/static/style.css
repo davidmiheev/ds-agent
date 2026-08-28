@@ -139,9 +139,64 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .msg.tool .body, .msg.tool-result .body { padding: 0; background: transparent; }
 .msg.system .body { background: transparent; padding: 4px 8px; }
 
-.tool { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; }
-.tool-head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.tool {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  margin: 4px 0;
+  overflow: hidden;
+}
+.tool-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12.5px;
+  background: var(--bg-soft);
+}
+.tool-summary:hover {
+  background: var(--bg-2);
+}
+.tool-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.tool-title {
+  font-weight: 500;
+  color: var(--fg);
+}
+.tool-content {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.tool-content pre {
+  margin: 0;
+  max-height: 400px;
+  overflow: auto;
+}
 .badge { background: var(--accent-2); color: white; font-size: 11px; padding: 2px 8px; border-radius: 4px; }
+.badge-result { background: var(--green); }
+.badge-result.error { background: var(--red); }
+.badge-thinking { background: #8957e5; }
+
+.thinking-block {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  margin: 4px 0;
+  overflow: hidden;
+}
+.thinking-block .tool-content {
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--bg);
+}
+
 .tool-result { border-left: 3px solid var(--green); background: var(--bg-soft); padding: 8px 12px; border-radius: 0 8px 8px 0; }
 .tool-result.error { border-left-color: var(--red); }
 .tool-img { max-width: 100%; border-radius: 4px; }

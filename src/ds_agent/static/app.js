@@ -110,7 +110,7 @@ function chatApp() {
           } else if (m.role === 'assistant') {
             this.messages.push({ role: 'assistant', html: expandArtifacts(this._renderMd(m.content)) });
           } else if (m.role === 'thinking') {
-            this.messages.push({ role: 'assistant', html: this._renderMd('> ' + m.content + '\n\n'), thinking: true });
+            this.messages.push({ role: 'assistant', html: this._renderThinking(m.content), thinking: true });
           } else if (m.role === 'tool') {
             this.messages.push({ role: 'tool', html: this._renderToolUse(m.content) });
           } else if (m.role === 'tool-result') {
@@ -193,7 +193,7 @@ function chatApp() {
           if (b.type === 'text' && b.text) {
             this._appendAssistantText(b.text);
           } else if (b.type === 'thinking' && b.thinking) {
-            this._appendAssistantText('> ' + b.thinking + '\n\n', { thinking: true });
+            this._appendThinkingBlock(b.thinking);
           } else if (b.type === 'tool_use') {
             this._newToolBlock(b);
           }
@@ -239,16 +239,39 @@ function chatApp() {
       this._appendSystem(JSON.stringify(f).slice(0, 400));
     },
 
-    _appendAssistantText(text, opts = {}) {
+    _appendAssistantText(text) {
       if (this._activeAssistantIdx < 0) {
         this.messages.push({ role: 'assistant', html: '', _raw: '' });
         this._activeAssistantIdx = this.messages.length - 1;
       }
       const m = this.messages[this._activeAssistantIdx];
-      m._raw = (m._raw || '') + (opts.thinking ? '> ' + text : text);
+      m._raw = (m._raw || '') + text;
       m.html = expandArtifacts(this._renderMd(m._raw));
       this._scrollDown();
       this._enhanceCodeBlocks();
+    },
+
+    _appendThinkingBlock(thinkingText) {
+      this._activeAssistantIdx = -1;
+      this.messages.push({ role: 'assistant', html: this._renderThinking(thinkingText), thinking: true });
+      this._scrollDown();
+      this._enhanceCodeBlocks();
+    },
+
+    _renderThinking(text) {
+      const rendered = this._renderMd(text);
+      return `<details class="thinking-block">
+        <summary class="tool-summary">
+          <div class="tool-head">
+            <span class="badge badge-thinking">thinking</span>
+            <span class="muted small">internal reasoning</span>
+          </div>
+          <span class="muted small">click to toggle</span>
+        </summary>
+        <div class="tool-content">
+          ${rendered}
+        </div>
+      </details>`;
     },
 
     _newToolBlock(b) {
@@ -279,9 +302,9 @@ function chatApp() {
       try {
         const dirty = marked.parse(text, { breaks: true, gfm: true });
         return DOMPurify.sanitize(dirty, {
-          ADD_TAGS: ['img', 'svg', 'path', 'button'],
+          ADD_TAGS: ['img', 'svg', 'path', 'button', 'details', 'summary', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'span', 'div', 'code', 'pre'],
           ADD_ATTR: ['src', 'alt', 'class', 'target', 'href', 'download', 'title', 'rel',
-                     'data-kind', 'data-mime', 'data-name', 'data-path', 'data-b64'],
+                     'data-kind', 'data-mime', 'data-name', 'data-path', 'data-b64', 'open'],
         });
       } catch (e) {
         return escapeHtml(text);
@@ -289,29 +312,72 @@ function chatApp() {
     },
 
     _renderToolUse(b) {
-      const args = JSON.stringify(b.input || {}, null, 2);
-      return `<div class="tool">
-        <div class="tool-head"><span class="badge">${escapeHtml(b.name || 'tool')}</span> <span class="muted small">${escapeHtml(b.id || '')}</span></div>
-        <pre><code class="language-json">${escapeHtml(args)}</code></pre>
-      </div>`;
+      const toolName = b.name || 'tool';
+      const inputObj = b.input || {};
+      let summaryText = '';
+      if (typeof inputObj === 'object') {
+        if (inputObj.query) summaryText = `query: "${String(inputObj.query).slice(0, 60)}"`;
+        else if (inputObj.command) summaryText = `cmd: "${String(inputObj.command).slice(0, 60)}"`;
+        else if (inputObj.code) summaryText = `code (${String(inputObj.code).split('\n').length} lines)`;
+        else if (inputObj.file_path || inputObj.path) summaryText = `path: ${inputObj.file_path || inputObj.path}`;
+      }
+      const args = JSON.stringify(inputObj, null, 2);
+      return `<details class="tool" open>
+        <summary class="tool-summary">
+          <div class="tool-head">
+            <span class="badge">${escapeHtml(toolName)}</span>
+            <span class="tool-title muted small">${escapeHtml(summaryText || b.id || '')}</span>
+          </div>
+          <span class="muted small">toggle</span>
+        </summary>
+        <div class="tool-content">
+          <pre><code class="language-json">${escapeHtml(args)}</code></pre>
+        </div>
+      </details>`;
     },
 
     _renderToolResult(c) {
       const inner = Array.isArray(c.content) ? c.content : [{ type: 'text', text: String(c.content || '') }];
+      const hasError = !!c.is_error;
       const parts = inner.map(b => {
         if (b.type === 'text') {
-          // The server has already pre-processed __ARTIFACT__ markers into <div class="artifact"> blocks
-          return b.text;
+          const rawText = b.text || '';
+          // Check if it's already an artifact block emitted by artifact_parser
+          if (rawText.includes('class="artifact"')) {
+            return expandArtifacts(rawText);
+          }
+          // Pretty-format JSON responses if valid JSON
+          const trimmed = rawText.trim();
+          if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              const formatted = JSON.stringify(parsed, null, 2);
+              return `<pre><code class="language-json">${escapeHtml(formatted)}</code></pre>`;
+            } catch (_) {}
+          }
+          // Markdown or preformatted code
+          if (trimmed.includes('\n') || trimmed.length > 80) {
+            return `<pre><code>${escapeHtml(rawText)}</code></pre>`;
+          }
+          return `<div style="font-family: var(--mono); font-size: 12.5px;">${escapeHtml(rawText)}</div>`;
         }
         if (b.type === 'image') {
           return `<img class="tool-img" alt="output" src="data:${b.mime_type || 'image/png'};base64,${b.data}">`;
         }
         return '';
       }).join('\n');
-      const err = c.is_error ? ' error' : '';
-      // Parse server-emitted artifact divs and turn them into real elements.
-      const cleaned = expandArtifacts(parts);
-      return `<div class="tool-result${err}">${cleaned}</div>`;
+
+      return `<details class="tool" open>
+        <summary class="tool-summary">
+          <div class="tool-head">
+            <span class="badge badge-result ${hasError ? 'error' : ''}">${hasError ? 'tool error' : 'tool result'}</span>
+          </div>
+          <span class="muted small">toggle</span>
+        </summary>
+        <div class="tool-content tool-result ${hasError ? 'error' : ''}">
+          ${parts}
+        </div>
+      </details>`;
     },
 
     _enhanceCodeBlocks() {
@@ -467,12 +533,30 @@ function expandArtifacts(html) {
   return tmpl.innerHTML;
 }
 
-// Enhance code blocks with syntax highlighting and a sleek copy button
+// Enhance code blocks with syntax highlighting and a sleek copy button, and render KaTeX math
 function enhanceCodeBlocks(root) {
   if (!root) return;
+
+  // 1. Render LaTeX / Math formulae via KaTeX if available
+  if (window.renderMathInElement) {
+    try {
+      renderMathInElement(root, {
+        delimiters: [
+          { left: '$$', right: '$$', display: true },
+          { left: '$', right: '$', display: false },
+          { left: '\\(', right: '\\)', display: false },
+          { left: '\\[', right: '\\]', display: true },
+        ],
+        throwOnError: false,
+        ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code', 'option'],
+      });
+    } catch (e) {
+      console.error('KaTeX rendering error:', e);
+    }
+  }
   
   root.querySelectorAll('pre code').forEach((codeBlock) => {
-    // 1. Syntax highlighting
+    // 2. Syntax highlighting
     if (!codeBlock.dataset.highlighted && window.hljs) {
       try {
         hljs.highlightElement(codeBlock);
@@ -482,7 +566,7 @@ function enhanceCodeBlocks(root) {
     const pre = codeBlock.parentElement;
     if (!pre || pre.querySelector('.copy-code-btn')) return;
 
-    // 2. Add copy button
+    // 3. Add copy button
     const copyBtn = document.createElement('button');
     copyBtn.className = 'copy-code-btn';
     copyBtn.type = 'button';

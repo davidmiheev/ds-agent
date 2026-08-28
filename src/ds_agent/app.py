@@ -9,23 +9,19 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import core, db, crypto, sessions
+from . import core, db, crypto, sessions, telegram
 from .providers import env_for
 
 db.init()
 
 app = FastAPI(title="Coding Agent")
 
+_telegram_task: asyncio.Task | None = None
+
 
 @app.on_event("startup")
-def _seed_env_keys() -> None:
-    """Seed BYOK keys from env vars on first run, so .env alone is enough.
-
-    OPENROUTER_API_KEY → stored as 'openrouter' provider key
-    ANTHROPIC_API_KEY  → stored as 'anthropic' provider key
-    MINIMAX_API_KEY    → stored as 'minimax' provider key
-    KAGGLE_API_TOKEN   → stored as 'kaggle' provider key (for Kaggle MCP)
-    """
+async def _startup_tasks() -> None:
+    """Seed BYOK keys and launch background workers."""
     import os
     or_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if or_key and not crypto.load_key("openrouter"):
@@ -46,6 +42,22 @@ def _seed_env_keys() -> None:
     ).strip()
     if kg_key and not crypto.load_key("kaggle"):
         crypto.save_key("kaggle", kg_key, label="Kaggle API Token (env)")
+
+    # Launch Telegram bot worker if configured
+    global _telegram_task
+    if telegram.is_configured():
+        _telegram_task = asyncio.create_task(telegram.run_bot_polling())
+
+
+@app.on_event("shutdown")
+async def _shutdown_tasks() -> None:
+    global _telegram_task
+    if _telegram_task:
+        _telegram_task.cancel()
+        try:
+            await _telegram_task
+        except asyncio.CancelledError:
+            pass
 
 
 HERE = Path(__file__).parent
@@ -444,7 +456,6 @@ async def ws_session(ws: WebSocket, sid: str):
         return
 
     active.in_use = True
-    db.touch_session(sid)
     reader_task = None
     try:
         # Greet

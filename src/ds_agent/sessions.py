@@ -293,6 +293,7 @@ def _render_session_dir(row: dict, env: dict, workspace: Path) -> None:
 
 
 async def send_user_message(active: ActiveSession, text: str) -> None:
+    db.touch_session(active.id)
     """Queue a user message; the WS reader loop will call query() on it."""
     await active.pending_steer.put({"type": "user", "text": text})
 
