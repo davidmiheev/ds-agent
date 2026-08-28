@@ -52,6 +52,7 @@ def is_configured() -> bool:
 
 class TelegramAPI:
     def __init__(self, token: str):
+        self.token = token
         self.base_url = f"https://api.telegram.org/bot{token}"
 
     def _request(self, method: str, data: dict | None = None, files: dict | None = None) -> dict:
@@ -93,16 +94,34 @@ class TelegramAPI:
     async def call(self, method: str, data: dict | None = None, files: dict | None = None) -> dict:
         return await asyncio.to_thread(self._request, method, data, files)
 
-    async def send_message(self, chat_id: int, text: str, parse_mode: str = "Markdown") -> dict:
+    async def send_message(self, chat_id: int, text: str, parse_mode: str = "Markdown", reply_markup: dict | None = None) -> dict:
         # Split message if exceeds Telegram 4096 char limit
         chunks = [text[i:i+4000] for i in range(0, len(text), 4000)] or ["(empty)"]
         res = {}
-        for chunk in chunks:
-            # Try markdown first, fallback to plain text if malformed Markdown
-            res = await self.call("sendMessage", {"chat_id": chat_id, "text": chunk, "parse_mode": parse_mode})
+        for idx, chunk in enumerate(chunks):
+            payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            # Only attach reply_markup to the last chunk
+            if reply_markup and idx == len(chunks) - 1:
+                payload["reply_markup"] = reply_markup
+
+            res = await self.call("sendMessage", payload)
             if not res.get("ok") and parse_mode:
-                res = await self.call("sendMessage", {"chat_id": chat_id, "text": chunk})
+                payload.pop("parse_mode", None)
+                res = await self.call("sendMessage", payload)
         return res
+
+    async def answer_callback_query(self, callback_query_id: str, text: str = "") -> dict:
+        return await self.call("answerCallbackQuery", {"callback_query_id": callback_query_id, "text": text})
+
+    async def get_file_download_url(self, file_id: str) -> str | None:
+        res = await self.call("getFile", {"file_id": file_id})
+        if res.get("ok") and "result" in res:
+            file_path = res["result"].get("file_path")
+            if file_path:
+                return f"https://api.telegram.org/file/bot{self.token}/{file_path}"
+        return None
 
     async def send_photo(self, chat_id: int, photo_bytes: bytes, caption: str = "") -> dict:
         return await self.call(
@@ -167,16 +186,53 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
         return
 
     if cmd == "/models":
-        lines = ["*Available Models:*"]
-        for prov, mlist in model_catalog.CURATED.items():
-            if prov == "custom":
-                continue
-            lines.append(f"\n*{prov.upper()}:*")
-            for m in mlist:
-                if m["id"]:
-                    lines.append(f"• `{m['id']}` - _{m['label']}_")
-        lines.append("\nUse `/new <model_id>` to start a session with that model.")
-        await api.send_message(chat_id, "\n".join(lines))
+        # Check if user requested a specific category/provider or page
+        # e.g. /models [provider/query/page]
+        query = parts[1].strip() if len(parts) > 1 else ""
+
+        # Fetch live OpenRouter models if openrouter key available, otherwise use curated
+        live_or_models = await model_catalog.openrouter_live_models()
+        buttons: list[list[dict]] = []
+
+        if live_or_models:
+            # Filter if search query provided
+            models_to_show = live_or_models
+            if query:
+                models_to_show = [m for m in live_or_models if query.lower() in m["id"].lower() or query.lower() in m["label"].lower()]
+
+            total_found = len(models_to_show)
+            # Display top 15 results with inline keyboard buttons for 1-click creation
+            display_slice = models_to_show[:15]
+
+            lines = [f"🌐 *All Available Models* ({total_found} total):"]
+            if query:
+                lines.append(f"_Filter: '{query}'_")
+            lines.append("\n_Click a button below or type `/new <model_id>`:_")
+
+            for m in display_slice:
+                tag_str = f" [{m['tag']}]" if m.get("tag") and m["tag"] != "default" else ""
+                short_label = m['label'][:35]
+                # Each button has callback_data with model id
+                buttons.append([
+                    {"text": f"✨ {short_label}{tag_str}", "callback_data": f"new:{m['id']}"}
+                ])
+
+            if total_found > 15:
+                lines.append(f"\n_Showing first 15 of {total_found} models. Filter with `/models <name>` (e.g. `/models claude`, `/models gpt`, `/models llama`, `/models deepseek`)._")
+        else:
+            # Fallback to curated catalog
+            lines = ["*Available Models (Curated):*"]
+            for prov, mlist in model_catalog.CURATED.items():
+                if prov == "custom":
+                    continue
+                for m in mlist:
+                    if m["id"]:
+                        buttons.append([
+                            {"text": f"{prov.upper()}: {m['label']}", "callback_data": f"new:{m['id']}"}
+                        ])
+
+        reply_markup = {"inline_keyboard": buttons} if buttons else None
+        await api.send_message(chat_id, "\n".join(lines), reply_markup=reply_markup)
         return
 
     if cmd == "/new":
@@ -333,6 +389,94 @@ async def _run_agent_turn_for_telegram(api: TelegramAPI, chat_id: int, user_text
             await api.send_message(chat_id, f"❌ Turn error: {e}")
 
 
+async def _handle_callback_query(api: TelegramAPI, cb: dict) -> None:
+    cb_id = cb.get("id", "")
+    data = cb.get("data", "")
+    message = cb.get("message", {})
+    chat = message.get("chat", {})
+    chat_id = chat.get("id")
+    from_user = cb.get("from", {})
+    user_id = from_user.get("id")
+
+    if not chat_id:
+        return
+
+    # Access control
+    if TELEGRAM_ALLOWED_USERS and user_id not in TELEGRAM_ALLOWED_USERS:
+        await api.answer_callback_query(cb_id, "⛔ Access denied.")
+        return
+
+    if data.startswith("new:"):
+        model = data[4:].strip()
+        await api.answer_callback_query(cb_id, f"Creating session with {model[:25]}...")
+        await _handle_command(api, chat_id, f"/new {model}")
+    else:
+        await api.answer_callback_query(cb_id)
+
+
+async def _handle_document_upload(api: TelegramAPI, chat_id: int, user_id: int, doc: dict, caption: str = "") -> None:
+    """Download an uploaded file (e.g. CSV, JSON, parquet, py) and save it to the active session workspace."""
+    sid = _ensure_session_for_chat(chat_id)
+    row = db.get_session(sid)
+    if not row:
+        await api.send_message(chat_id, "❌ Active session not found.")
+        return
+
+    ws_dir = Path(row["workspace"])
+    ws_dir.mkdir(parents=True, exist_ok=True)
+
+    file_id = doc.get("file_id")
+    raw_name = doc.get("file_name") or f"uploaded_file_{os.urandom(4).hex()}"
+    file_name = Path(raw_name).name  # sanitize
+
+    # Check file size (Telegram bot API direct download limit is 20MB)
+    file_size = doc.get("file_size", 0)
+    if file_size > 20 * 1024 * 1024:
+        await api.send_message(chat_id, "⚠️ File exceeds 20MB limit for Telegram bots.")
+        return
+
+    await api.call("sendChatAction", {"chat_id": chat_id, "action": "upload_document"})
+
+    url = await api.get_file_download_url(file_id)
+    if not url:
+        await api.send_message(chat_id, f"❌ Failed to obtain download link for `{file_name}`.")
+        return
+
+    dest = ws_dir / file_name
+
+    def _download():
+        req = urllib.request.Request(url, headers={"User-Agent": "ds-agent/0.1"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            dest.write_bytes(resp.read())
+
+    try:
+        await asyncio.to_thread(_download)
+    except Exception as e:
+        logger.error("Failed downloading Telegram file %s: %s", file_name, e)
+        await api.send_message(chat_id, f"❌ Download error: {e}")
+        return
+
+    size_kb = dest.stat().st_size / 1024
+    size_str = f"{size_kb:.1f} KB" if size_kb < 1024 else f"{size_kb/1024:.2f} MB"
+
+    notification = (
+        f"📁 *Uploaded file saved to workspace:*\n"
+        f"• *File:* `{file_name}` ({size_str})\n"
+        f"• *Session:* `{sid[:8]}`\n"
+        f"• *Path in agent:* `{file_name}`"
+    )
+    await api.send_message(chat_id, notification)
+
+    # If the user included a caption with the file, send it as the prompt to analyze the file
+    prompt = caption.strip()
+    if prompt:
+        user_prompt = f"I uploaded `{file_name}` to your workspace. {prompt}"
+        asyncio.create_task(_run_agent_turn_for_telegram(api, chat_id, user_prompt))
+    else:
+        user_prompt = f"I have uploaded `{file_name}` to your workspace. Please examine this file and summarize its structure and contents."
+        asyncio.create_task(_run_agent_turn_for_telegram(api, chat_id, user_prompt))
+
+
 async def run_bot_polling() -> None:
     """Long-polling background worker for Telegram bot."""
     if not is_configured():
@@ -352,6 +496,13 @@ async def run_bot_polling() -> None:
 
             for u in updates_res.get("result", []):
                 offset = max(offset, u["update_id"] + 1)
+
+                # Handle inline keyboard callback clicks (e.g. 1-click model selection)
+                cb = u.get("callback_query")
+                if cb:
+                    asyncio.create_task(_handle_callback_query(api, cb))
+                    continue
+
                 msg = u.get("message")
                 if not msg:
                     continue
@@ -361,8 +512,10 @@ async def run_bot_polling() -> None:
                 from_user = msg.get("from", {})
                 user_id = from_user.get("id")
                 text = msg.get("text", "")
+                caption = msg.get("caption", "")
+                doc = msg.get("document")
 
-                if not chat_id or not text:
+                if not chat_id:
                     continue
 
                 # Access control check
@@ -371,6 +524,14 @@ async def run_bot_polling() -> None:
                         chat_id,
                         f"⛔ Access denied. Your Telegram user ID is `{user_id}`. Add it to `TELEGRAM_ALLOWED_USERS`."
                     )
+                    continue
+
+                # Handle document / file upload (CSV, JSON, data files, etc.)
+                if doc:
+                    asyncio.create_task(_handle_document_upload(api, chat_id, user_id, doc, caption))
+                    continue
+
+                if not text:
                     continue
 
                 if text.startswith("/"):
