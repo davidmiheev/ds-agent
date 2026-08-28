@@ -43,6 +43,9 @@ async def _startup_tasks() -> None:
     if kg_key and not crypto.load_key("kaggle"):
         crypto.save_key("kaggle", kg_key, label="Kaggle API Token (env)")
 
+    # Pre-fetch OpenRouter models & pricing into cache
+    asyncio.create_task(model_catalog.openrouter_live_models())
+
     # Launch Telegram bot worker if configured
     global _telegram_task
     if telegram.is_configured():

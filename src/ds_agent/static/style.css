@@ -315,9 +315,9 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 .settings .keys li { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
 .settings textarea { font-family: var(--mono); }
 
-/* --- modal (model picker) --- */
-.modal { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal-box { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px; padding: 24px; min-width: 480px; max-width: 640px; box-shadow: 0 12px 48px rgba(0,0,0,0.5); }
+/* --- modal (model picker & context breakdown) --- */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; backdrop-filter: blur(2px); }
+.modal-box { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: 90%; max-width: 580px; max-height: 90vh; overflow-y: auto; box-shadow: 0 12px 48px rgba(0,0,0,0.5); }
 .modal-box h3 { margin-top: 0; }
 .modal-box label { display: block; margin: 14px 0; }
 .modal-box label > select, .modal-box label > input { width: 100%; margin-top: 4px; background: var(--bg-2); color: var(--fg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-family: var(--mono); font-size: 13px; }
@@ -325,6 +325,60 @@ button.tiny { padding: 0 5px; font-size: 11px; line-height: 1.4; }
 [x-cloak] { display: none !important; }
 
 /* --- context bar in header --- */
-.ctx-bar { position: relative; width: 90px; height: 18px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; cursor: pointer; }
+.ctx-bar { position: relative; width: 90px; height: 18px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 9px; overflow: hidden; cursor: pointer; flex-shrink: 0; }
 .ctx-fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #3fb950, #d29922 70%, #f85149 95%); transition: width .3s; }
 .ctx-label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--fg); font-weight: 600; text-shadow: 0 0 2px rgba(0,0,0,.7); }
+
+/* --- mobile responsive UI --- */
+.mobile-toggle, .mobile-close-btn, .drawer-backdrop { display: none; }
+.header-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.session-title-header { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; font-size: 14px; }
+.icon-btn { padding: 4px 8px; font-size: 14px; line-height: 1; }
+
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: 1fr;
+    position: relative;
+    overflow: hidden;
+  }
+  .sidebar {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: 280px;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.5);
+  }
+  .sidebar.open {
+    transform: translateX(0);
+  }
+  .files {
+    position: fixed;
+    top: 0; right: 0; bottom: 0;
+    width: 280px;
+    z-index: 50;
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+    box-shadow: -4px 0 24px rgba(0,0,0,0.5);
+  }
+  .files.open {
+    transform: translateX(0);
+  }
+  .drawer-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 40;
+    backdrop-filter: blur(1px);
+  }
+  .mobile-toggle { display: inline-flex; }
+  .mobile-close-btn { display: inline-flex; }
+  .model-badge { display: none; }
+  .chat-header { padding: 8px 12px; }
+  .chat-header .actions { gap: 6px; }
+  .messages { padding: 12px 8px; gap: 10px; }
+  .msg { max-width: 96%; }
+  .composer { padding: 8px 10px; }
+}

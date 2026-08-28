@@ -39,6 +39,14 @@ CURATED: dict[str, list[dict]] = {
 }
 
 
+_PRICING_CACHE: dict[str, dict] = {}
+
+
+def get_model_pricing(model_id: str) -> dict | None:
+    """Return cached per-token pricing for a model or None."""
+    return _PRICING_CACHE.get(model_id)
+
+
 async def openrouter_live_models(api_key: str | None = None, timeout: float = 4.0) -> list[dict] | None:
     """Hit OpenRouter's /api/v1/models and return a sorted list.
 
@@ -59,15 +67,17 @@ async def openrouter_live_models(api_key: str | None = None, timeout: float = 4.
         return None
     items = data.get("data", [])
     out: list[dict] = []
+    global _PRICING_CACHE
     for m in items:
         mid = m.get("id", "")
         if not mid:
             continue
         name = m.get("name", mid)
         ctx = int(m.get("context_length") or 0)
-        # crude tag: cheap if pricing < $0.5/M, reasoning if it's an o-series,
-        # otherwise default
         pricing = m.get("pricing", {}) or {}
+        if pricing:
+            _PRICING_CACHE[mid] = pricing
+
         prompt = float(pricing.get("prompt") or 0) * 1_000_000
         tag = "default"
         if mid.startswith(("openai/o", "deepseek/deepseek-r", "anthropic/claude-3-7")):

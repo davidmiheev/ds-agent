@@ -1,17 +1,23 @@
 {% extends "base.html" %}
 {% block title %}Coding Agent{% endblock %}
 {% block body %}
-<div x-data="chatApp()" x-init="init()" class="app">
-  <aside class="sidebar">
+<div x-data="chatApp()" x-init="init()" class="app" :class="{'sidebar-open': sidebarOpen, 'files-open': filesOpen}">
+  <!-- Backdrop for mobile drawer closing -->
+  <div class="drawer-backdrop" x-show="sidebarOpen || filesOpen" @click="sidebarOpen = false; filesOpen = false" x-cloak></div>
+
+  <aside class="sidebar" :class="{'open': sidebarOpen}">
     <div class="brand">
       <strong>coding agent</strong>
-      <a href="/settings" class="icon" title="settings">⚙</a>
+      <div style="display:flex; gap:4px; align-items:center;">
+        <a href="/settings" class="icon" title="settings">⚙</a>
+        <button class="ghost tiny mobile-close-btn" @click="sidebarOpen = false">✕</button>
+      </div>
     </div>
     <button class="new" @click="newSession()">+ new session</button>
     <div class="session-list" id="session-list">
       {% for s in sessions %}
       <div class="session-item" data-id="{{ s.id }}" :class="{active: currentId==='{{s.id}}'}"
-           @click="open('{{s.id}}')">
+           @click="open('{{s.id}}'); sidebarOpen = false;">
         <span class="title">{{ s.title }}</span>
         <span class="muted small">{{ s.model }}</span>
       </div>
@@ -24,18 +30,20 @@
 
   <main class="chat" x-show="currentId" x-cloak>
     <header class="chat-header">
-      <div>
+      <div class="header-left">
+        <button class="ghost tiny icon-btn mobile-toggle" @click="sidebarOpen = !sidebarOpen" title="Toggle Sessions">☰</button>
         <span class="dot" :class="{on: connected}"></span>
-        <span x-text="title || '(no session)'"></span>
+        <span class="session-title-header" x-text="title || '(no session)'"></span>
       </div>
       <div class="actions">
-        <div class="ctx-bar" @click="compact()" :title="`context ${contextPct}% full — click to compact`">
+        <div class="ctx-bar" @click="openContextModal()" :title="`context ${contextPct}% full — click for breakdown & compact`">
           <div class="ctx-fill" :style="`width:${contextPct}%`"></div>
-          <span class="ctx-label" x-text="`ctx ${contextPct}%`"></span>
+          <span class="ctx-label" x-text="`ctx ${contextPct}% 🔍`"></span>
         </div>
-        <span class="muted small" x-text="model"></span>
+        <span class="muted small model-badge" x-text="model"></span>
         <button class="ghost" @click="interrupt()" :disabled="!busy">stop</button>
         <button class="ghost danger" @click="deleteCurrent()">delete</button>
+        <button class="ghost tiny icon-btn mobile-toggle" @click="filesOpen = !filesOpen" title="Toggle Files">📁</button>
       </div>
     </header>
 
@@ -78,8 +86,11 @@
     </footer>
   </main>
 
-  <aside class="files" x-show="currentId" x-cloak>
-    <div class="brand">workspace</div>
+  <aside class="files" :class="{'open': filesOpen}" x-show="currentId" x-cloak>
+    <div class="brand">
+      <span>workspace</span>
+      <button class="ghost tiny mobile-close-btn" @click="filesOpen = false">✕</button>
+    </div>
     <div class="path" x-text="workspace"></div>
     <ul class="file-list">
       <template x-for="f in files" :key="f.path">
@@ -91,6 +102,49 @@
       </template>
     </ul>
   </aside>
+
+  <!-- Context Breakdown Modal -->
+  <div class="modal" x-show="showContextModal" x-cloak @keydown.escape.window="closeContextModal()">
+    <div class="modal-box" @click.outside="closeContextModal()">
+      <h3>Context Window Breakdown</h3>
+      <div style="margin: 12px 0;">
+        <div style="display:flex; justify-content:space-between; margin-bottom: 6px; font-size: 13px;">
+          <span><strong>Total Fill:</strong> <span x-text="`${contextPct}%`"></span></span>
+          <span class="muted" x-text="`${(contextData?.totalTokens || 0).toLocaleString()} / ${(contextData?.maxTokens || contextData?.rawMaxTokens || 200000).toLocaleString()} tokens`"></span>
+        </div>
+        <div class="ctx-bar" style="width: 100%; height: 12px; margin-bottom: 14px;">
+          <div class="ctx-fill" :style="`width:${contextPct}%`"></div>
+        </div>
+
+        <div style="background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
+          <template x-if="contextData?.categories && contextData.categories.length">
+            <div>
+              <template x-for="cat in contextData.categories" :key="cat.name">
+                <div style="display:flex; justify-content:space-between; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 13px;">
+                  <span style="display:flex; align-items:center; gap:6px;">
+                    <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--accent);"></span>
+                    <span x-text="cat.name"></span>
+                  </span>
+                  <span style="font-family: var(--mono); color: var(--fg-muted);" x-text="`${(cat.tokens || 0).toLocaleString()} tokens`"></span>
+                </div>
+              </template>
+            </div>
+          </template>
+          <template x-if="!contextData?.categories || !contextData.categories.length">
+            <p class="muted small">No detailed breakdown available yet for this turn.</p>
+          </template>
+        </div>
+
+        <div style="margin-top: 14px; display:flex; justify-content:space-between; align-items:center;">
+          <span class="muted small">Auto-compact triggers automatically when context reaches ≥ 95%.</span>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="ghost" @click="closeContextModal()">Close</button>
+        <button class="ghost danger" @click="compact(); closeContextModal();">🧹 Compact Context Now</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Picker modal: new session -->
   <div class="modal" x-show="showPicker" x-cloak @keydown.escape.window="pickerCancel()">
@@ -118,6 +172,8 @@
       <button @click="pickerConfirm()">create</button>
     </div>
   </div>
+  </div>
+</div>
   </div>
 </div>
 

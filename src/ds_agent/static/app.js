@@ -23,6 +23,10 @@ function chatApp() {
     lastUsage: null,
     // Context-window fill (from /v1/sessions/{id}/context)
     contextPct: 0,
+    contextData: null,
+    showContextModal: false,
+    sidebarOpen: false,
+    filesOpen: false,
     // Dataset upload state
     uploading: false,
     uploadedPath: '',
@@ -128,8 +132,21 @@ function chatApp() {
       try {
         const r = await fetch(`/v1/sessions/${this.currentId}/context`);
         const d = await r.json();
+        this.contextData = d;
         this.contextPct = Math.round(d.percentage || 0);
-      } catch (e) { this.contextPct = 0; }
+      } catch (e) {
+        this.contextPct = 0;
+        this.contextData = null;
+      }
+    },
+
+    async openContextModal() {
+      await this._refreshContext();
+      this.showContextModal = true;
+    },
+
+    closeContextModal() {
+      this.showContextModal = false;
     },
 
     async compact() {

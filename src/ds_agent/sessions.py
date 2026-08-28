@@ -469,25 +469,49 @@ async def stream_events(active: ActiveSession) -> Any:
 def _record_result_usage(sid: str, msg: Any) -> None:
     """Pull cache + cost stats out of the SDK's ResultMessage and store in DB.
 
-    model_usage is a dict keyed by model id. Each entry has inputTokens,
-    outputTokens, cacheReadInputTokens, cacheCreationInputTokens, costUSD.
-    Summing across models gives a session-level view.
+    Calculates accurate cost based on real per-model token pricing from
+    model_catalog, with fallback to SDK's costUSD.
     """
+    from . import model_catalog
     model_usage = getattr(msg, "model_usage", None) or {}
     total_in = total_out = total_cache_read = total_cache_create = 0
     total_cost = 0.0
-    for _, u in model_usage.items():
+
+    for m_name, u in model_usage.items():
         try:
-            total_in += int(u.get("inputTokens") or 0)
-            total_out += int(u.get("outputTokens") or 0)
-            total_cache_read += int(u.get("cacheReadInputTokens") or 0)
-            total_cache_create += int(u.get("cacheCreationInputTokens") or 0)
-            total_cost += float(u.get("costUSD") or 0)
+            in_t = int(u.get("inputTokens") or 0)
+            out_t = int(u.get("outputTokens") or 0)
+            cache_read_t = int(u.get("cacheReadInputTokens") or 0)
+            cache_create_t = int(u.get("cacheCreationInputTokens") or 0)
+            total_in += in_t
+            total_out += out_t
+            total_cache_read += cache_read_t
+            total_cache_create += cache_create_t
+
+            # Check if we have exact per-token pricing from OpenRouter/provider catalog
+            pricing = model_catalog.get_model_pricing(m_name)
+            if pricing:
+                prompt_rate = float(pricing.get("prompt") or 0)
+                completion_rate = float(pricing.get("completion") or 0)
+                cache_read_rate = float(pricing.get("input_cache_read") or (prompt_rate * 0.1))
+                cache_write_rate = float(pricing.get("input_cache_write") or (prompt_rate * 1.25))
+
+                calc_cost = (
+                    (in_t * prompt_rate) +
+                    (out_t * completion_rate) +
+                    (cache_read_t * cache_read_rate) +
+                    (cache_create_t * cache_write_rate)
+                )
+                total_cost += calc_cost
+            else:
+                total_cost += float(u.get("costUSD") or 0)
         except Exception:
             pass
-    # Top-level cost from ResultMessage (sometimes differs from per-model sum)
-    if getattr(msg, "total_cost_usd", None) is not None:
-        total_cost = max(total_cost, float(msg.total_cost_usd))
+
+    # If no catalog pricing was matched, fallback to SDK's reported total_cost_usd
+    if total_cost <= 0.0 and getattr(msg, "total_cost_usd", None) is not None:
+        total_cost = float(msg.total_cost_usd)
+
     cache_hit_pct = (total_cache_read * 100 // (total_in + total_cache_read + 1)) if (total_in or total_cache_read) else 0
     db.record_usage(sid, {
         "input_tokens": total_in,
