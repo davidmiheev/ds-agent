@@ -444,6 +444,18 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
         return
 
 
+def strip_thinking_and_internal_tags(text: str) -> str:
+    """Strip out any raw internal thinking/scratchpad tags like <think>...</think> or <thought>...</thought>."""
+    if not text:
+        return ""
+    # Strip <think>...</think> or <thought>...</thought> blocks (common in DeepSeek R1 / reasoning models)
+    cleaned = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r'<thought>.*?</thought>', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+    # Strip unclosed <think> if any
+    cleaned = re.sub(r'<think(?:ing)?>.*', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned.strip()
+
+
 async def _run_agent_turn_for_telegram(api: TelegramAPI, chat_id: int, user_text: str) -> None:
     sid = _ensure_session_for_chat(chat_id)
     if chat_id not in _chat_locks:
@@ -460,7 +472,7 @@ async def _run_agent_turn_for_telegram(api: TelegramAPI, chat_id: int, user_text
         await api.call("sendChatAction", {"chat_id": chat_id, "action": "typing"})
         await sessions.send_user_message(active, user_text)
 
-        accumulated_text = []
+        turn_texts: list[str] = []
         last_typing_time = asyncio.get_event_loop().time()
 
         try:
@@ -474,18 +486,36 @@ async def _run_agent_turn_for_telegram(api: TelegramAPI, chat_id: int, user_text
                     last_typing_time = now
 
                 if ftype == "assistant":
+                    # Ignore thinking blocks completely; collect only final assistant text
                     content = frame.get("content") or []
+                    block_texts = []
                     for b in content:
-                        if b.get("type") == "text" and b.get("text"):
-                            accumulated_text.append(b.get("text"))
+                        if not isinstance(b, dict):
+                            continue
+                        b_type = b.get("type")
+                        # Explicitly exclude thinking blocks
+                        if b_type in ("thinking", "thought"):
+                            continue
+                        if b_type == "text" and b.get("text"):
+                            cleaned_t = strip_thinking_and_internal_tags(b.get("text", ""))
+                            if cleaned_t:
+                                block_texts.append(cleaned_t)
+                    if block_texts:
+                        turn_texts.append("\n\n".join(block_texts))
 
                 elif ftype == "error":
                     await api.send_message(chat_id, f"⚠️ *Agent Error:* {frame.get('message')}")
                     return
 
                 elif ftype == "result":
-                    # Send final accumulated response
-                    final_text = "".join(accumulated_text).strip()
+                    # We send only the final end result text from the agent
+                    # If multiple assistant text chunks were produced (e.g. across intermediate tool steps),
+                    # the last chunk represents the final conclusion/result to the user.
+                    if turn_texts:
+                        final_text = turn_texts[-1].strip()
+                    else:
+                        final_text = ""
+
                     if final_text:
                         await api.send_message(chat_id, final_text)
 
