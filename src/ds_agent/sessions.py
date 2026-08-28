@@ -293,10 +293,11 @@ def _render_session_dir(row: dict, env: dict, workspace: Path) -> None:
 
 
 async def send_user_message(active: ActiveSession, text: str) -> None:
-    """Inject a user prompt into the running session, auto-compacting if context is full."""
+    """Queue a user message; the WS reader loop will call query() on it.
+
+    Proactively auto-compacts first if context is >= 95% full.
+    """
     db.touch_session(active.id)
-    # Re-read vault keys into session env so new/updated keys are available instantly.
-    active.env = providers.env_for(active.db_row["provider"], active.db_row["model"])
 
     # Proactive auto-compact: if context is >= 95% full, trigger compact before query
     try:
@@ -309,9 +310,9 @@ async def send_user_message(active: ActiveSession, text: str) -> None:
     except Exception:
         pass
 
-    await active.client.send_user_message(text)
+    await active.pending_steer.put({"type": "user", "text": text})
 
-def interrupt(active: ActiveSession) -> None:
+async def interrupt(active: ActiveSession) -> None:
     """Cancel the in-flight turn."""
     try:
         await active.client.interrupt()
