@@ -322,7 +322,7 @@ function chatApp() {
         else if (inputObj.file_path || inputObj.path) summaryText = `path: ${inputObj.file_path || inputObj.path}`;
       }
       const args = JSON.stringify(inputObj, null, 2);
-      return `<details class="tool" open>
+      return `<details class="tool">
         <summary class="tool-summary">
           <div class="tool-head">
             <span class="badge">${escapeHtml(toolName)}</span>
@@ -367,7 +367,7 @@ function chatApp() {
         return '';
       }).join('\n');
 
-      return `<details class="tool" open>
+      return `<details class="tool">
         <summary class="tool-summary">
           <div class="tool-head">
             <span class="badge badge-result ${hasError ? 'error' : ''}">${hasError ? 'tool error' : 'tool result'}</span>
