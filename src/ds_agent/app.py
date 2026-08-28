@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import core, db, crypto, sessions, telegram
+from . import core, db, crypto, sessions, telegram, model_catalog
 from .providers import env_for
 
 db.init()
