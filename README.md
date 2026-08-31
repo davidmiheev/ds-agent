@@ -119,10 +119,39 @@ A unified search server with 12 tools for literature and biological/economic dat
 - **Bioinformatics**: `uniprot_search`, `pdb_search`, `ensembl_search`.
 
 ### 5. Telegram Bot Integration
-Interact directly with the agent from Telegram on mobile or desktop:
-- Set `TELEGRAM_BOT_TOKEN="<token>"` and optionally `TELEGRAM_ALLOWED_USERS="<id1>,<id2>"` in `.env`.
-- Supports `/new`, `/sessions`, `/switch <id>`, `/compact`, `/stop`, and `/status`.
-- Automatically renders text turns and attaches generated image plots/artifacts.
+Interact directly with the agent from Telegram on mobile or desktop. It runs
+as a background long-polling worker (`src/ds_agent/telegram.py`) alongside
+the FastAPI server whenever a bot token is configured — no separate process
+or public webhook needed.
+
+**Setup**:
+1. Create a bot with [@BotFather](https://t.me/BotFather) and grab its token.
+2. Add to `.env`:
+   ```bash
+   TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
+   # Optional whitelist of Telegram user IDs (comma-separated); if unset, anyone can use the bot
+   TELEGRAM_ALLOWED_USERS="12345678,87654321"
+   ```
+3. Start the server (`bash scripts/run_server.sh`) and message your bot on Telegram — an unauthorized user gets their numeric ID back in the denial message, handy for populating `TELEGRAM_ALLOWED_USERS`.
+
+**Commands**:
+
+| Command | Action |
+|---|---|
+| `/start`, `/help` | Welcome message and usage instructions |
+| `/models [query]` | List/filter live or curated model IDs as tappable buttons for `/new` |
+| `/new [model]` | Start a fresh session (defaults to `claude-sonnet-4-5` via OpenRouter, or the first configured BYOK provider) |
+| `/sessions` | List the 10 most recent sessions, marking the active one |
+| `/switch <id>` | Switch the chat to a different session (prefix match on session ID) |
+| `/compact` | Compact the active session's context |
+| `/stop` | Interrupt the agent mid-turn |
+| `/status` | Show the active session's ID, title, model, provider, and workspace path |
+
+**Behavior**:
+- Each Telegram chat maps to one ds-agent session at a time (`/new` creates one automatically on first message if none exists), with a per-chat lock so turns don't overlap.
+- Assistant replies stream as edited messages; thinking blocks and intermediate tool narration are filtered out so only the end result is sent, with Markdown converted to Telegram-safe HTML (code blocks preserved).
+- Generated plots/artifacts are automatically attached as photos or documents.
+- Send a file (CSV, JSON, Parquet, `.py`, etc.) directly in chat to upload it into the active session's workspace — the agent is prompted to inspect it automatically.
 
 ---
 
@@ -264,7 +293,7 @@ ds-agent/
 │
 ├── deploy/
 │   └── Caddyfile             # 5-line Caddy reverse proxy configuration with automatic TLS
-├── docs/                     # Architecture notes (arch.md) and roadmap (todo.md)
+├── docs/                     # Architecture notes (arch.md), roadmap (todo.md), CI/CD docs (ci-cd.md)
 ├── scripts/
 │   ├── run_server.sh         # Startup script on port 8765 (with auto port-reclaim)
 │   ├── install_ds_env.sh     # Installer for dedicated ~/.coding-agent/ds-env
@@ -334,27 +363,10 @@ journalctl -u coding-agent -f      # live logs
 
 ### CI/CD: GitHub Actions Deploy Workflow
 
-`.github/workflows/deploy.yml` runs `scripts/deploy_remote.sh` from GitHub
-Actions — on every push to `main`, or on demand from the **Actions** tab
-(`workflow_dispatch`), where the target host/user/port/dir/app-port can be
-overridden for that single run.
-
-Configure these **repository secrets** (Settings → Secrets and variables →
-Actions) before running it:
-
-| Secret | Required | Purpose |
-|---|---|---|
-| `SSH_PRIVATE_KEY` | ✅ | Private key for the deploy SSH user |
-| `DEPLOY_HOST` | ✅ | Default remote IP/hostname (overridable per-run via the `remote_host` input) |
-| `ENV_FILE` | ✅ | Full contents of the `.env` file to deploy |
-| `REMOTE_USER` | optional | SSH user (default `root`) |
-| `REMOTE_PORT` | optional | SSH port (default `22`) |
-| `REMOTE_DIR` | optional | Install dir on remote (default `/opt/coding-agent`) |
-| `APP_PORT` | optional | Web server port (default `8765`) |
-| `COLAB_TOKEN_JSON` | optional | Contents of `~/.config/colab-cli/token.json`, copied to the remote so Colab MCP skips a fresh OAuth flow |
-
-> **Note on Colab OAuth:** Colab MCP requires a Google OAuth token (`~/.config/colab-cli/token.json`).
-> Run `src/colab_mcp/.venv/bin/python src/colab_mcp/auth_once.py` locally once. The deploy script (`scripts/deploy_remote.sh`) automatically copies your local token to `/home/agent/.config/colab-cli/token.json` during deployment.
+`.github/workflows/deploy.yml` runs `scripts/deploy_remote.sh` automatically
+from GitHub Actions (push to `main`, or manually via `workflow_dispatch`).
+See **[docs/ci-cd.md](docs/ci-cd.md)** for the required repository secrets
+and how it's configured.
 
 ### Manual / HTTPS Deployment
 
