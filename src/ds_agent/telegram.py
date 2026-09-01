@@ -46,6 +46,8 @@ TELEGRAM_ALLOWED_USERS = [
 _chat_sessions: dict[int, str] = {}
 # Lock per chat so turns don't overlap
 _chat_locks: dict[int, asyncio.Lock] = {}
+# Preferred provider per chat, set via /provider, used as the default for /new
+_chat_preferred_provider: dict[int, str] = {}
 
 
 def is_configured() -> bool:
@@ -269,10 +271,14 @@ def _ensure_session_for_chat(chat_id: int) -> str:
         _chat_sessions[chat_id] = sid
         return sid
 
-    # Find default provider
+    # Find default provider: chat's /provider pick, else openrouter, else whatever's configured
     provs = crypto.list_providers()
-    provider = "openrouter" if "openrouter" in provs else (provs[0] if provs else "openrouter")
-    model = "anthropic/claude-sonnet-4-5" if provider == "openrouter" else "claude-3-7-sonnet"
+    preferred = _chat_preferred_provider.get(chat_id)
+    if preferred and preferred in provs:
+        provider = preferred
+    else:
+        provider = "openrouter" if "openrouter" in provs else (provs[0] if provs else "openrouter")
+    model = "anthropic/claude-sonnet-4.5" if provider == "openrouter" else "claude-sonnet-4-5"
     new_sess = sessions.create(
         provider=provider,
         model=model,
@@ -293,6 +299,7 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
             "*Commands:*\n"
             "• `/new [model_id]` - Create a new session (optionally specify model)\n"
             "• `/models` - List popular model IDs to use with `/new`\n"
+            "• `/provider [name]` - Show/pick the BYOK provider used as the default for `/new`\n"
             "• `/sessions` - List existing sessions\n"
             "• `/switch <id>` - Switch to an existing session\n"
             "• `/compact` - Compact context window\n"
@@ -353,11 +360,42 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
         await api.send_message(chat_id, "\n".join(lines), reply_markup=reply_markup)
         return
 
+    if cmd == "/provider":
+        provs = crypto.list_providers()
+        if not provs:
+            await api.send_message(chat_id, "No providers configured yet. Add BYOK keys in the web UI (Settings → BYOK keys).")
+            return
+
+        if len(parts) > 1:
+            target = parts[1].strip().lower()
+            if target not in provs:
+                configured = ", ".join(f"`{p}`" for p in provs)
+                await api.send_message(chat_id, f"❌ Provider `{target}` is not configured. Configured providers: {configured}")
+                return
+            _chat_preferred_provider[chat_id] = target
+            await api.send_message(chat_id, f"✅ Default provider for `/new` set to `{target}`.")
+            return
+
+        current = _chat_preferred_provider.get(chat_id)
+        lines = ["*Configured Providers:*"]
+        buttons = []
+        for p in provs:
+            marker = " 👈 *(current default)*" if p == current else ""
+            lines.append(f"• `{p}`{marker}")
+            buttons.append([{"text": f"Use {p}", "callback_data": f"setprov:{p}"}])
+        lines.append("\nTap a button, or use `/provider <name>` to set the default used by `/new`.")
+        await api.send_message(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": buttons})
+        return
+
     if cmd == "/new":
         specified_model = parts[1].strip() if len(parts) > 1 else ""
         provs = crypto.list_providers()
 
-        provider = "openrouter" if "openrouter" in provs else (provs[0] if provs else "openrouter")
+        preferred = _chat_preferred_provider.get(chat_id)
+        if preferred and preferred in provs:
+            provider = preferred
+        else:
+            provider = "openrouter" if "openrouter" in provs else (provs[0] if provs else "openrouter")
         if specified_model:
             model = specified_model
             # Determine provider if format is provider/model or known provider
@@ -368,7 +406,7 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
             elif model.lower().startswith("minimax"):
                 provider = "minimax" if "minimax" in provs else "openrouter"
         else:
-            model = "anthropic/claude-sonnet-4-5" if provider == "openrouter" else "claude-3-7-sonnet"
+            model = "anthropic/claude-sonnet-4.5" if provider == "openrouter" else "claude-sonnet-4-5"
 
         sess = sessions.create(
             provider=provider,
@@ -530,9 +568,6 @@ async def _run_agent_turn_for_telegram(api: TelegramAPI, chat_id: int, user_text
                             except Exception:
                                 pass
 
-                    cost = frame.get("total_cost_usd")
-                    cost_str = f" (${cost:.4f})" if cost is not None else ""
-                    await api.send_message(chat_id, f"✅ _Turn finished_{cost_str}")
                     return
         except Exception as e:
             logger.error("Error during Telegram agent turn: %s", e)
@@ -560,6 +595,10 @@ async def _handle_callback_query(api: TelegramAPI, cb: dict) -> None:
         model = data[4:].strip()
         await api.answer_callback_query(cb_id, f"Creating session with {model[:25]}...")
         await _handle_command(api, chat_id, f"/new {model}")
+    elif data.startswith("setprov:"):
+        provider = data[8:].strip()
+        await api.answer_callback_query(cb_id, f"Default provider set to {provider}")
+        await _handle_command(api, chat_id, f"/provider {provider}")
     else:
         await api.answer_callback_query(cb_id)
 

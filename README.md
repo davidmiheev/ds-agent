@@ -140,7 +140,8 @@ or public webhook needed.
 |---|---|
 | `/start`, `/help` | Welcome message and usage instructions |
 | `/models [query]` | List/filter live or curated model IDs as tappable buttons for `/new` |
-| `/new [model]` | Start a fresh session (defaults to `claude-sonnet-4-5` via OpenRouter, or the first configured BYOK provider) |
+| `/provider [name]` | Show configured BYOK providers, or set the default one `/new` uses (tappable buttons, or `/provider openrouter`) |
+| `/new [model]` | Start a fresh session (defaults to `claude-sonnet-4.5` on the chat's default provider, initially OpenRouter or the first configured BYOK provider) |
 | `/sessions` | List the 10 most recent sessions, marking the active one |
 | `/switch <id>` | Switch the chat to a different session (prefix match on session ID) |
 | `/compact` | Compact the active session's context |
@@ -149,7 +150,7 @@ or public webhook needed.
 
 **Behavior**:
 - Each Telegram chat maps to one ds-agent session at a time (`/new` creates one automatically on first message if none exists), with a per-chat lock so turns don't overlap.
-- Assistant replies stream as edited messages; thinking blocks and intermediate tool narration are filtered out so only the end result is sent, with Markdown converted to Telegram-safe HTML (code blocks preserved).
+- Assistant replies stream as edited messages; thinking blocks and intermediate tool narration are filtered out so only the end result is sent, with Markdown converted to Telegram-safe HTML (code blocks preserved) — the bot no longer posts a separate "Turn finished" / cost summary after every reply (check `/status` or the web UI for cost/usage).
 - Generated plots/artifacts are automatically attached as photos or documents.
 - Send a file (CSV, JSON, Parquet, `.py`, etc.) directly in chat to upload it into the active session's workspace — the agent is prompted to inspect it automatically.
 

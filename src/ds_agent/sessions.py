@@ -364,9 +364,26 @@ async def get_context_usage(active: ActiveSession) -> dict:
     See isAutoCompactEnabled / autoCompactThreshold in the response.
     """
     try:
-        return await active.client.get_context_usage()
+        usage = await active.client.get_context_usage()
     except Exception as e:
         return {"error": str(e)}
+
+    # The underlying Claude Code CLI only knows real context-window sizes for
+    # Claude models; routed through OpenRouter to a non-Anthropic model (GPT-5,
+    # Gemini, ...) it silently reports Claude's own 200K window instead of the
+    # real one. Correct maxTokens/percentage using OpenRouter's live per-model
+    # context_length when we have it (see model_catalog.get_model_context_window).
+    if active.db_row.get("provider") == "openrouter":
+        from . import model_catalog
+        real_ctx = model_catalog.get_model_context_window(active.db_row.get("model", ""))
+        if real_ctx and usage.get("maxTokens") != real_ctx:
+            usage = dict(usage)
+            total = usage.get("totalTokens", 0) or 0
+            usage["maxTokens"] = real_ctx
+            usage["rawMaxTokens"] = real_ctx
+            usage["contextWindow"] = real_ctx
+            usage["percentage"] = min(100.0, (total / real_ctx) * 100)
+    return usage
 
 
 async def compact_now(active: ActiveSession) -> dict:
