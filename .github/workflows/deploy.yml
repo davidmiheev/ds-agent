@@ -92,10 +92,13 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
 
       - name: Restore Colab OAuth token (optional)
-        if: ${{ secrets.COLAB_TOKEN_JSON != '' }}
         env:
           COLAB_TOKEN_JSON: ${{ secrets.COLAB_TOKEN_JSON }}
         run: |
+          if [ -z "$COLAB_TOKEN_JSON" ]; then
+            echo "No COLAB_TOKEN_JSON secret set, skipping."
+            exit 0
+          fi
           mkdir -p ~/.config/colab-cli
           printf '%s\n' "$COLAB_TOKEN_JSON" > ~/.config/colab-cli/token.json
           chmod 600 ~/.config/colab-cli/token.json
