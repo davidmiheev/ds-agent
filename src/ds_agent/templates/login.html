@@ -2,6 +2,28 @@
 {% block title %}Login — Coding Agent{% endblock %}
 {% block body %}
 <main class="login">
+  {% if otp_enabled %}
+  <div class="card">
+    <h1>Coding Agent</h1>
+    <p class="muted">sign in with a one-time code sent to Telegram</p>
+    {% if error %}<p class="err">{{ error }}</p>{% endif %}
+
+    {% if sent %}
+    <form method="post" action="/login/otp/verify">
+      <p class="muted">check Telegram for your code</p>
+      <input type="text" name="code" placeholder="6-digit code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autofocus autocomplete="one-time-code" />
+      <button type="submit">verify</button>
+    </form>
+    <form method="post" action="/login/otp/request">
+      <button type="submit" class="ghost">resend code</button>
+    </form>
+    {% else %}
+    <form method="post" action="/login/otp/request">
+      <button type="submit">send code to Telegram</button>
+    </form>
+    {% endif %}
+  </div>
+  {% else %}
   <form method="post" action="/login" class="card">
     <h1>Coding Agent</h1>
     <p class="muted">enter password</p>
@@ -9,5 +31,6 @@
     <input type="password" name="password" autofocus autocomplete="current-password" />
     <button type="submit">sign in</button>
   </form>
+  {% endif %}
 </main>
 {% endblock %}

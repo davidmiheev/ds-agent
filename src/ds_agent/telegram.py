@@ -41,11 +41,11 @@ TELEGRAM_ALLOWED_USERS = [
     for uid in os.environ.get("TELEGRAM_ALLOWED_USERS", "").split(",")
     if uid.strip().isdigit()
 ]
+# Chat that receives web-login one-time codes (see otp_chat_id() below).
+TELEGRAM_OTP_CHAT_ID = os.environ.get("TELEGRAM_OTP_CHAT_ID", "").strip()
 
 # Track current active session_id per Telegram chat_id
 _chat_sessions: dict[int, str] = {}
-# Lock per chat so turns don't overlap
-_chat_locks: dict[int, asyncio.Lock] = {}
 # Preferred provider per chat, set via /provider, used as the default for /new
 _chat_preferred_provider: dict[int, str] = {}
 
@@ -151,12 +151,53 @@ def split_message_chunks(text: str, max_chunk_size: int = 4000) -> list[str]:
     if cur:
         chunks.append("".join(cur))
     return chunks
+
+
 # Lock per chat so turns don't overlap
 _chat_locks: dict[int, asyncio.Lock] = {}
 
 
-def is_configured() -> bool:
-    return bool(TELEGRAM_BOT_TOKEN)
+def otp_chat_id() -> int | None:
+    """Resolve which Telegram chat receives web-login one-time codes.
+
+    TELEGRAM_OTP_CHAT_ID wins if set; otherwise, if exactly one user is
+    whitelisted via TELEGRAM_ALLOWED_USERS, use that — a user's private chat
+    id with the bot is the same as their Telegram user id. Returns None
+    (OTP login unavailable) if neither resolves unambiguously.
+    """
+    if TELEGRAM_OTP_CHAT_ID:
+        try:
+            return int(TELEGRAM_OTP_CHAT_ID)
+        except ValueError:
+            return None
+    if len(TELEGRAM_ALLOWED_USERS) == 1:
+        return TELEGRAM_ALLOWED_USERS[0]
+    return None
+
+
+def otp_enabled() -> bool:
+    return is_configured() and otp_chat_id() is not None
+
+
+async def send_otp_code(code: str) -> bool:
+    """Send a one-time web-login code to the configured OTP chat.
+
+    Returns True if the Telegram API call succeeded, False otherwise (bot not
+    configured, no resolvable chat, or the send itself failed).
+    """
+    chat_id = otp_chat_id()
+    if not chat_id:
+        return False
+    api = TelegramAPI(TELEGRAM_BOT_TOKEN)
+    try:
+        await api.send_message(
+            chat_id,
+            f"🔐 *ds-agent login code:* `{code}`\n\nExpires in 5 minutes. Ignore this if it wasn't you.",
+        )
+        return True
+    except Exception:
+        logger.exception("Failed to send web-login OTP via Telegram")
+        return False
 
 
 class TelegramAPI:

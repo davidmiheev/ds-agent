@@ -26,6 +26,13 @@ CREATE TABLE IF NOT EXISTS session_usage (
     last_usage      TEXT,        -- JSON: {input_tokens, output_tokens, cache_read, cache_creation, cost_usd, turn_count}
     last_at         REAL
 );
+CREATE TABLE IF NOT EXISTS login_otp (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),  -- single-user app: at most one live code
+    code_hash   TEXT NOT NULL,
+    created_at  REAL NOT NULL,
+    expires_at  REAL NOT NULL,
+    attempts    INTEGER NOT NULL DEFAULT 0
+);
 """
 
 def _connect() -> sqlite3.Connection:
@@ -86,12 +93,45 @@ def make_cookie_token() -> str:
     return tok
 
 def check_cookie(tok: str) -> bool:
+    """Whether `tok` is a valid, issued session cookie.
+
+    Whether a cookie is required at all (no auth configured vs. password vs.
+    Telegram OTP) is an app.py concern — see app._auth_required().
+    """
     if not tok:
         return False
-    if not core.APP_PASSWORD:
-        return True  # no password required → any token (or none) is fine
     with conn() as c:
         return c.execute("SELECT 1 FROM auth_cookies WHERE token=?", (tok,)).fetchone() is not None
+
+
+# ---- Telegram OTP web login ----
+
+def set_login_otp(code_hash: str, ttl_seconds: float) -> None:
+    now = time.time()
+    with conn() as c:
+        c.execute(
+            """INSERT INTO login_otp (id, code_hash, created_at, expires_at, attempts)
+               VALUES (1, ?, ?, ?, 0)
+               ON CONFLICT(id) DO UPDATE SET
+                   code_hash=excluded.code_hash, created_at=excluded.created_at,
+                   expires_at=excluded.expires_at, attempts=0""",
+            (code_hash, now, now + ttl_seconds),
+        )
+
+def get_login_otp() -> dict | None:
+    with conn() as c:
+        row = c.execute("SELECT * FROM login_otp WHERE id=1").fetchone()
+        return dict(row) if row else None
+
+def bump_otp_attempts() -> int:
+    with conn() as c:
+        c.execute("UPDATE login_otp SET attempts = attempts + 1 WHERE id=1")
+        row = c.execute("SELECT attempts FROM login_otp WHERE id=1").fetchone()
+        return row["attempts"] if row else 0
+
+def clear_login_otp() -> None:
+    with conn() as c:
+        c.execute("DELETE FROM login_otp WHERE id=1")
 
 
 # ---- session usage tracking (last turn) ----

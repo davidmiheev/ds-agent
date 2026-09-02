@@ -235,7 +235,8 @@ Create a `.env` file in the project root:
 # Optional default provider API key
 OPENROUTER_API_KEY=sk-or-v1-...
 
-# Optional Web UI login password (leave unset for passwordless local mode)
+# Optional Web UI login password (leave unset for passwordless local mode).
+# Ignored if Telegram OTP login is configured instead — see "Web Login" below.
 APP_PASSWORD=your-secure-password
 
 # Optional FRED API key for economic data (free at https://fred.stlouisfed.org)
@@ -248,6 +249,22 @@ bash scripts/run_server.sh
 ```
 
 Open `http://localhost:8765` in your browser, create a new session, and start exploring datasets or training models.
+
+---
+
+## 🔐 Web Login
+
+Three modes, picked automatically based on what's configured:
+
+1. **Passwordless** (default): `APP_PASSWORD` unset and no Telegram OTP configured — fine for `localhost` only.
+2. **Password**: set `APP_PASSWORD` in `.env`.
+3. **Telegram one-time code** (recommended once the Telegram bot — see *Telegram Bot Integration* below — is set up; replaces the password entirely): configure `TELEGRAM_BOT_TOKEN` and either a single `TELEGRAM_ALLOWED_USERS` entry or an explicit `TELEGRAM_OTP_CHAT_ID`. The `/login` page then shows a **"send code to Telegram"** button instead of a password field — click it, a 6-digit code arrives in the chat, and entering it (within 5 minutes, up to 5 attempts, one resend per 30s) signs you in. `APP_PASSWORD` is ignored while this mode is active.
+
+```bash
+# .env — Telegram OTP login (no APP_PASSWORD needed)
+TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
+TELEGRAM_ALLOWED_USERS="12345678"   # single ID → also used as the OTP recipient
+```
 
 ---
 
@@ -354,7 +371,7 @@ The script:
    restart on failure).
 7. Health-checks `/healthz` and verifies every MCP server with an initialize handshake.
 
-Then open `http://<REMOTE_IP>:8765` and log in with your `APP_PASSWORD`.
+Then open `http://<REMOTE_IP>:8765` and log in — with your `APP_PASSWORD`, or via a Telegram one-time code if you configured that instead (see *Web Login* above).
 
 Useful on the remote:
 ```bash
