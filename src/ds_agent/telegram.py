@@ -375,7 +375,7 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
             "• `/new [model_id]` - Create a new session (optionally specify model)\n"
             "• `/models` - List popular model IDs to use with `/new`\n"
             "• `/provider [name]` - Show/pick the BYOK provider used as the default for `/new`\n"
-            "• `/sessions` - List existing sessions\n"
+            "• `/sessions` - List existing sessions with 1-click switch buttons\n"
             "• `/switch <id>` - Switch to an existing session\n"
             "• `/compact` - Compact context window\n"
             "• `/stop` - Interrupt the current running turn\n"
@@ -500,11 +500,16 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
             return
         cur_id = _chat_sessions.get(chat_id)
         lines = ["*Recent Sessions:*"]
+        buttons: list[list[dict]] = []
         for s in sess_list:
-            active_marker = " 👈 *(current)*" if s["id"] == cur_id else ""
+            is_current = s["id"] == cur_id
+            active_marker = " 👈 *(current)*" if is_current else ""
             lines.append(f"• `{s['id'][:8]}` - *{s['title']}* ({s['model']}){active_marker}")
-        lines.append("\nSwitch using `/switch <id>`")
-        await api.send_message(chat_id, "\n".join(lines))
+            btn_prefix = "✅ " if is_current else "🔀 "
+            btn_label = f"{btn_prefix}{s['title']} ({s['id'][:8]})"[:60]
+            buttons.append([{"text": btn_label, "callback_data": f"switch:{s['id']}"}])
+        lines.append("\nTap a button below, or use `/switch <id>`")
+        await api.send_message(chat_id, "\n".join(lines), reply_markup={"inline_keyboard": buttons})
         return
 
     if cmd == "/switch":
@@ -584,13 +589,25 @@ async def _run_agent_turn_for_telegram(api: TelegramAPI, chat_id: int, user_text
 
         # Send initial typing indicator
         await api.call("sendChatAction", {"chat_id": chat_id, "action": "typing"})
+
+        # Subscribe BEFORE sending: if a web UI tab already has this session
+        # open, the shared engine is already running, and send_user_message()
+        # can be picked up and answered before a subscription registered
+        # afterward would exist — we'd then wait forever for a reply we
+        # already missed. See sessions.subscribe()'s docstring.
+        sub_q = sessions.subscribe(active)
         await sessions.send_user_message(active, user_text)
 
         turn_texts: list[str] = []
         last_typing_time = asyncio.get_event_loop().time()
 
+        # Explicit generator + aclose() (rather than a bare `async for`) so the
+        # subscriber queue is removed deterministically on return/exception,
+        # not whenever GC gets to it — this is a shared fan-out subscription
+        # now, not a private reader, so a lingering unread queue would leak.
+        events = sessions.stream_from(active, sub_q)
         try:
-            async for frame in sessions.stream_events(active):
+            async for frame in events:
                 ftype = frame.get("type")
 
                 # Heartbeat / typing action
@@ -664,6 +681,8 @@ async def _run_agent_turn_for_telegram(api: TelegramAPI, chat_id: int, user_text
         except Exception as e:
             logger.error("Error during Telegram agent turn: %s", e)
             await api.send_message(chat_id, f"❌ Turn error: {e}")
+        finally:
+            await events.aclose()
 
 
 async def _handle_callback_query(api: TelegramAPI, cb: dict) -> None:
@@ -691,6 +710,10 @@ async def _handle_callback_query(api: TelegramAPI, cb: dict) -> None:
         provider = data[8:].strip()
         await api.answer_callback_query(cb_id, f"Default provider set to {provider}")
         await _handle_command(api, chat_id, f"/provider {provider}")
+    elif data.startswith("switch:"):
+        sid = data[7:].strip()
+        await api.answer_callback_query(cb_id, f"Switching to {sid[:8]}...")
+        await _handle_command(api, chat_id, f"/switch {sid}")
     else:
         await api.answer_callback_query(cb_id)
 

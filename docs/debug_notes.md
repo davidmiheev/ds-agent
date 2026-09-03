@@ -160,6 +160,67 @@ the hang is on the model API, not a tool.
   silently never set. Now `resume=_sdk_session_id(workspace)` = newest
   transcript's stem.
 
+## Concurrent web UI + Telegram on the same session: races, misrouted replies, spurious interrupts (2026-09-03)
+
+**Symptom**: with a web UI tab open on a session, sending a Telegram message
+to that same session got "strangely interrupted", and a follow-up message
+got no response at all — a recurrence of the bug below, on the same session
+(`c0b22fad52fa452b`), even after the "always notify" telegram.py fix landed.
+
+**Root cause**: `stream_events(active)` was called independently by every
+consumer — once per WebSocket connection in `app.py`, and freshly on *every
+single Telegram message* in `telegram.py`. Each call spawned its own
+`_pump()` task doing `async for msg in active.client.receive_messages()`.
+When a web UI tab and a Telegram turn were both alive on the same
+`ActiveSession`, **two tasks iterated the same SDK message stream
+concurrently** — an unsupported, racy pattern. Whichever task happened to
+be scheduled to receive a given message got it; the other consumer never
+saw it. Concretely:
+- If Telegram's reply landed in the web UI's private queue instead of
+  Telegram's, Telegram's own watchdog (armed because `turn_active` is
+  true but *its* queue got nothing) fired after `TURN_INACTIVITY_TIMEOUT`
+  and called `interrupt()` — killing the turn the web UI was actually
+  receiving fine. That's the "strangely interrupted" symptom.
+- After such an interrupt, if the CLI process died, `respawn()` swapped in
+  a fresh client but the original queued message was never resent — silently
+  dropped. Next message to the session: still nothing, because the reply to
+  *that* one could just as easily be won by the other consumer's queue.
+
+**Fix** (`sessions.py`): replaced the per-caller reader with a single shared
+engine per `ActiveSession`, `_run_turn_engine()`, started lazily and exactly
+once (`_ensure_engine_started`). It owns the one `_pump()` reading
+`active.client.receive_messages()`, the one `_steer_pump()` sender, and the
+watchdog/interrupt/respawn logic — and fans out every frame
+(`_broadcast()`) to all currently-registered subscriber queues. Callers no
+longer read the SDK stream directly; they call `subscribe()` to register a
+queue and `stream_from()`/`stream_events()` to consume it. `app.py` and
+`telegram.py` were switched to this. A useful side effect: a web UI tab and
+a Telegram chat on the same session now see the *same* live stream, instead
+of racing for it.
+
+**Second, subtler race this exposed**: `stream_events()`/`subscribe()`
+registers a subscriber queue — but `stream_events()` is a lazy async
+generator, so *nothing in its body runs* (including registering the queue)
+until it's first iterated. If the shared engine is already running (e.g. a
+web UI tab already has the session open) and a caller calls
+`send_user_message()` before it starts iterating `stream_events()`, the
+already-running `_steer_pump` can dispatch and finish that turn before the
+caller's subscription exists — the caller then waits forever for a reply it
+already missed. Fixed by splitting `subscribe()` out as a **synchronous**
+call (registers immediately, no lazy generator involved) that both
+`app.py::ws_session` and `telegram.py::_run_agent_turn_for_telegram` now
+call *before* `send_user_message()` / before their receive loop can call it.
+
+**Known remaining limitation**: if two *genuinely overlapping* turns happen
+to be in flight from different interfaces at nearly the same moment, a
+freshly-subscribing consumer can still observe the tail of the *other*
+interface's already-in-flight turn (including its `result` frame) before
+its own turn is dispatched, and misattribute that result as its own reply.
+Turns are already serialized session-wide (`turn_done`, see the entry
+below), so this window is narrow, but fully closing it needs per-turn
+correlation (tagging each result with which enqueued message produced it),
+which is a bigger change than this fix. Not yet done.
+
 ## Telegram: turn completes silently, no reply ever arrives (2026-09-03)
 
 **Symptom**: user reported sending a message into session `c0b22fad52fa452b`
@@ -167,12 +228,21 @@ the hang is on the model API, not a tool.
 even an error.
 
 **Root cause chain**:
-1. That session's model was `openrouter` / `google/gemma-4-31b-it` — **the
-   exact same bogus model id** from the "Stuck agent incident (2026-08-26)"
-   above. It isn't a real Gemma id (Google ships `gemma-2-*`/`gemma-3-*` up
-   to 27B; there's no `gemma-4` or `31b`), and the CLI logs
-   `[claude-code:unrecognized_model]` for it. Routed through OpenRouter it
-   just hangs — no bytes ever come back.
+1. That session's model was `openrouter` / `google/gemma-4-31b-it` — the
+   exact same id from the "Stuck agent incident (2026-08-26)" above.
+   **Correction**: an earlier version of this note called this id
+   "nonexistent"/"hallucinated" — that was wrong. Checked directly against
+   OpenRouter's live `/api/v1/models` catalog (2026-09-03): it's real
+   (`google/gemma-4-31b-it`, plus `:free`/`:batch` variants). The actual
+   problem is that the *bundled Claude Code CLI* (pinned via
+   `claude-agent-sdk>=0.2.144`, CLI `2.1.251` on this host) has its own
+   internal model-recognition list that predates Gemma 4 and doesn't know
+   the id — it logs `[claude-code:unrecognized_model]` and then, rather than
+   failing fast or passing the request through as-is, the call to
+   OpenRouter just hangs with no bytes ever coming back. This is a
+   CLI/SDK-version limitation, not a bad model choice — `${CLAUDE_CODE_ENABLE_
+   GATEWAY_MODEL_DISCOVERY}=1` (already set for openrouter, see
+   `providers.py`) does not prevent it.
 2. The session's `.claude/projects/.../` dir was created (CLI spawned) but
    never got a transcript `.jsonl` — consistent with the very first query
    hanging before anything was ever written, exactly like the original
@@ -206,11 +276,15 @@ even an error.
   `run_bot_polling` loop, so stacking a blocking retry would just double
   the delay before that loop notices and tries again.
 
-**Not fixed here (still relevant)**: nothing validates a model id before
-spawning a session — `google/gemma-4-31b-it` will hang again if reused.
-Consider validating `/new <model>` (or button picks) against the live
-OpenRouter catalog / a known-model check before accepting it, so a bad id
-is rejected immediately instead of hanging for 5 minutes.
+**Not fixed here (still relevant)**: `google/gemma-4-31b-it` (and presumably
+any other model newer than the bundled CLI's recognition list) will hang
+again if reused — validating against OpenRouter's *live* catalog won't
+catch this, since the id is genuinely valid there. What would actually help:
+(a) upgrading `claude-agent-sdk`/the bundled CLI so its model list includes
+newer releases, and/or (b) a session-creation-time smoke-test query with a
+short timeout (e.g. a cheap 1-token request) so an id the CLI can't talk to
+is caught and reported in seconds instead of silently hanging the first
+real turn for `TURN_INACTIVITY_TIMEOUT` (5 min).
 
 ## Telegram `/models` search only matched the first word (2026-09-03)
 

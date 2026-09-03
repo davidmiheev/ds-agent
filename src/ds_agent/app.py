@@ -549,6 +549,12 @@ async def ws_session(ws: WebSocket, sid: str):
 
     active.in_use = True
     reader_task = None
+    # Subscribe before anything else on this connection (including the greet
+    # send below) — a message sent moments later via this WS's receive loop
+    # could otherwise be dispatched and answered (by an already-running
+    # shared engine, e.g. a concurrent Telegram turn) before this connection
+    # is listening for the reply. See sessions.subscribe()'s docstring.
+    sub_q = sessions.subscribe(active)
     try:
         # Greet
         await ws.send_text(json.dumps({
@@ -562,7 +568,7 @@ async def ws_session(ws: WebSocket, sid: str):
 
         async def reader():
             try:
-                async for frame in sessions.stream_events(active):
+                async for frame in sessions.stream_from(active, sub_q):
                     # Forward all frame types; artifact rewriting already happened
                     # in stream_events. Skip only the keepalive 'result' type's
                     # internal subtypes that the UI doesn't need.
