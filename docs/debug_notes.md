@@ -306,6 +306,39 @@ query token to appear in the haystack (order-independent, AND-matched).
 `"gemini 3.7"`, `"GEMINI 3-7"`, and `"gemini3.7"` all now match
 `google/gemini-3.7-flash`.
 
+## claude-agent-sdk was stale, and uv.lock wasn't actually locking it (2026-09-03)
+
+Checked after suspecting the bundled CLI's model-recognition gaps
+(gemma-4-31b-it, qwen3.8-27b — see entries above) might just be a version-lag
+problem: the deployed `.venv` had `claude-agent-sdk==0.2.148`, but PyPI's
+latest was `0.2.152` (released 2026-09-02, the day before). `pyproject.toml`
+only requires `>=0.2.144`, so nothing was pinning it down — the venv was
+simply last synced before 0.2.152 shipped.
+
+**Bonus finding**: `uv.lock` was only 13 lines — just the `[[package]]` stanza
+for `ds-agent` itself, none of its dependencies actually resolved/pinned.
+A normal uv.lock for this project should have 40+ packages with hashes.
+This means a fresh `uv sync` from a clean checkout (e.g. `deploy_remote.sh`
+on a new host) wasn't getting a real reproducible resolution — every deploy
+was silently re-resolving to "whatever's latest today" rather than a locked
+set. Not clear how it got into that state; worth watching for regressions
+(check `uv.lock` has real content after any future `uv add`/`uv sync`).
+
+**Fix applied**: `uv sync --upgrade-package claude-agent-sdk` (as the `agent`
+user, from `/opt/coding-agent`) — upgrades only that package (and its own
+transitive deps: `anyio` 4.14.2→4.15.0, `sse-starlette` 3.4.8→3.4.10) rather
+than a full re-resolution that could've bumped unrelated packages. This also
+regenerated `uv.lock` properly (43 packages, real hashes) as a side effect.
+Bundled CLI went `2.1.251` → `2.1.259`. Service restarted; came up clean.
+
+**Not verified**: whether 2.1.259 actually recognizes `google/gemma-4-31b-it`
+now — that needs a real query against that model to confirm, which costs
+real API spend, so it wasn't done as part of this check. If you hit the same
+unrecognized-model hang on that model again post-upgrade, the CLI's list
+still doesn't have it and the mitigations above (watchdog + shared engine +
+Telegram fallback message) are what's carrying the failure gracefully, not
+an actual fix for that specific model.
+
 ## Git / network
 
 - **SSH to GitHub fails over IPv6** on this box: `git push` dies with
