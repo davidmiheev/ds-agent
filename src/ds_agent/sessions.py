@@ -21,6 +21,12 @@ _active: dict[str, "ActiveSession"] = {}
 _active_locks: dict[str, asyncio.Lock] = {}
 
 
+def _new_set_event() -> asyncio.Event:
+    ev = asyncio.Event()
+    ev.set()
+    return ev
+
+
 @dataclass
 class ActiveSession:
     session_id: str
@@ -33,6 +39,13 @@ class ActiveSession:
     # result frame). The stream watchdog is only armed while this is set, so
     # idle time between turns never triggers a false timeout.
     turn_active: bool = False
+    # Set whenever no turn is in flight; cleared the moment the steer pump
+    # sends a query(). The pump waits on this before sending the next queued
+    # message, so a message that arrives while a turn is still generating is
+    # held until that turn's result frame lands instead of being injected
+    # into the CLI's stdin mid-turn (which caused replies to answer the
+    # wrong queued question — see _steer_pump).
+    turn_done: asyncio.Event = field(default_factory=_new_set_event)
 
 
 def _new_id() -> str:
@@ -455,10 +468,12 @@ async def stream_events(active: ActiveSession) -> Any:
                         pump_task.cancel()
                         pump_task = asyncio.create_task(_pump())
                         active.turn_active = False
+                        active.turn_done.set()
                         continue
                     yield {"type": "error",
                            "message": "turn timed out and could not be recovered — try sending again"}
                     active.turn_active = False
+                    active.turn_done.set()
                     continue
                 except StopAsyncIteration:
                     return
@@ -477,6 +492,7 @@ async def stream_events(active: ActiveSession) -> Any:
             if payload.get("type") == "result":
                 _record_result_usage(active.session_id, item)
                 active.turn_active = False
+                active.turn_done.set()
             yield payload
     finally:
         sender.cancel()
@@ -544,15 +560,27 @@ def _record_result_usage(sid: str, msg: Any) -> None:
 
 
 async def _steer_pump(active: ActiveSession) -> None:
-    """Drain the steer queue: when a 'user' message arrives, call client.query()."""
+    """Drain the steer queue: when a 'user' message arrives, call client.query().
+
+    Waits for any in-flight turn to finish (turn_done) before sending the
+    next queued message. Without this, a message that arrives while the CLI
+    is still generating a reply to an earlier one gets query()'d straight
+    into the same in-flight turn — the model picks it up mid-generation but
+    the final reply can still address the older question, silently dropping
+    the answer to the newer one. Queuing strictly after turn completion
+    makes each message its own turn instead of racing an active one.
+    """
     while True:
         item = await active.pending_steer.get()
         if item.get("type") == "user":
+            await active.turn_done.wait()
+            active.turn_done.clear()
             active.turn_active = True
             try:
                 await active.client.query(item["text"])
             except Exception:
                 active.turn_active = False
+                active.turn_done.set()
 
 
 def _serialize(msg: Any) -> dict:
