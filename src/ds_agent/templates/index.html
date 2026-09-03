@@ -42,6 +42,7 @@
         </div>
         <span class="muted small model-badge" x-text="model"></span>
         <button class="ghost" @click="interrupt()" :disabled="!busy">stop</button>
+        <button class="ghost" @click="exportCurrent()" title="download messages + artifacts as a zip">export</button>
         <button class="ghost danger" @click="deleteCurrent()">delete</button>
         <button class="ghost tiny icon-btn mobile-toggle" @click="filesOpen = !filesOpen" title="Toggle Files">📁</button>
       </div>

@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS login_otp (
     expires_at  REAL NOT NULL,
     attempts    INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS memories (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    text        TEXT NOT NULL,
+    tags        TEXT,
+    session_id  TEXT,
+    created_at  REAL NOT NULL
+);
 """
 
 def _connect() -> sqlite3.Connection:
@@ -132,6 +139,39 @@ def bump_otp_attempts() -> int:
 def clear_login_otp() -> None:
     with conn() as c:
         c.execute("DELETE FROM login_otp WHERE id=1")
+
+
+# ---- cross-session agent memory ----
+# A small persistent notebook the agent itself reads/writes via the memory
+# MCP tools (remember/recall/forget) — shared across every session, not
+# scoped to one workspace. See agent_mcp.py.
+
+def add_memory(text: str, tags: str = "", session_id: str | None = None) -> int:
+    with conn() as c:
+        cur = c.execute(
+            "INSERT INTO memories (text, tags, session_id, created_at) VALUES (?, ?, ?, ?)",
+            (text, tags, session_id, time.time()),
+        )
+        return cur.lastrowid
+
+def list_memories(query: str = "", limit: int = 50) -> list[dict]:
+    with conn() as c:
+        if query:
+            like = f"%{query}%"
+            rows = c.execute(
+                "SELECT * FROM memories WHERE text LIKE ? OR tags LIKE ? ORDER BY created_at DESC LIMIT ?",
+                (like, like, limit),
+            ).fetchall()
+        else:
+            rows = c.execute(
+                "SELECT * FROM memories ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+def delete_memory(memory_id: int) -> bool:
+    with conn() as c:
+        cur = c.execute("DELETE FROM memories WHERE id=?", (memory_id,))
+        return cur.rowcount > 0
 
 
 # ---- session usage tracking (last turn) ----

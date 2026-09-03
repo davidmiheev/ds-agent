@@ -155,6 +155,11 @@ function chatApp() {
       this._refreshContext();
     },
 
+    exportCurrent() {
+      if (!this.currentId) return;
+      window.location.href = `/v1/sessions/${this.currentId}/export`;
+    },
+
     deleteCurrent() {
       if (!this.currentId) return;
       if (!confirm('delete this session and its workspace?')) return;

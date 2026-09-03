@@ -23,6 +23,14 @@
         "DS_PYTHON": "${DATA_DIR}/ds-env/bin/python"
       }
     },
+    "memory": {
+      "command": "${ROOT}/.venv/bin/python",
+      "args": ["-m", "ds_agent.agent_mcp"],
+      "timeout": 30000,
+      "env": {
+        "PYTHONPATH": "${ROOT}/src"
+      }
+    },
     "kaggle": {
       "command": "npx",
       "args": [

@@ -32,7 +32,7 @@ from typing import Any
 import urllib.parse
 import urllib.request
 
-from . import core, db, crypto, sessions, model_catalog
+from . import core, db, crypto, sessions, model_catalog, export as export_mod
 
 logger = logging.getLogger("ds_agent.telegram")
 
@@ -379,7 +379,8 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
             "• `/switch <id>` - Switch to an existing session\n"
             "• `/compact` - Compact context window\n"
             "• `/stop` - Interrupt the current running turn\n"
-            "• `/status` - Show current active session info\n\n"
+            "• `/status` - Show current active session info\n"
+            "• `/export` - Download the current session (messages + artifacts) as a zip\n\n"
             "Send any prompt or question to start working with the agent!"
         )
         await api.send_message(chat_id, msg)
@@ -560,6 +561,28 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
             await api.send_message(chat_id, msg)
         else:
             await api.send_message(chat_id, "❌ No active session found. Use `/new` or select a model to start a session.")
+        return
+
+    if cmd == "/export":
+        sid = _ensure_session_for_chat(chat_id)
+        await api.send_message(chat_id, "📦 Building export…")
+        try:
+            data = await asyncio.to_thread(export_mod.build_zip_bytes, sid)
+        except Exception as e:
+            await api.send_message(chat_id, f"❌ Export failed: {e}")
+            return
+        # Telegram bot uploads are capped around 50 MB; leave some headroom.
+        if len(data) > 45 * 1024 * 1024:
+            await api.send_message(
+                chat_id,
+                f"❌ Export is {len(data) / 1024 / 1024:.1f} MB — too large for Telegram. "
+                "Download it from the web UI instead (session header → export).",
+            )
+            return
+        filename = export_mod.export_filename(sid)
+        res = await api.send_document(chat_id, data, filename, caption=f"Export of session {sid[:8]}")
+        if not res.get("ok"):
+            await api.send_message(chat_id, f"❌ Failed to send export: {res.get('description', 'unknown error')}")
         return
 
 

@@ -77,4 +77,37 @@ Other guidance:
 - For data work, use pandas, numpy, scipy, scikit-learn, statsmodels, biopython
   as appropriate. For bioinformatics, BioPython is fine; for quant, vectorbt /
   backtesting.py are good defaults.
+
+Cross-session memory + search (memory MCP tools):
+- `remember(text, tags=...)` saves a durable fact/preference/decision that
+  will show up automatically at the top of every future session's prompt
+  (see "Persistent memory" below, once you've saved anything). Use it for
+  things worth carrying forward — NOT for transient task state.
+- `recall(query=...)` / `forget(memory_id)` list/delete saved memories.
+- `list_sessions()` / `search_other_sessions(query)` / `get_session_summary(id)`
+  let you look across the user's OTHER sessions — use them when the user
+  refers to prior work ("the model I trained yesterday", "that other
+  session's dataset") instead of asking the user to repeat it.
 """
+
+
+def build_append_system_prompt() -> str:
+    """DEFAULT_APPEND_SYSTEM_PROMPT plus the current persistent-memory list.
+
+    Called fresh per session spawn (not module import time) so a session
+    picks up memories saved by any session, including itself, since the CLI
+    process started.
+    """
+    from . import db
+    memories = db.list_memories(limit=30)
+    if not memories:
+        return DEFAULT_APPEND_SYSTEM_PROMPT
+    lines = [
+        "",
+        "Persistent memory (facts/preferences saved earlier via the "
+        "`remember` memory-MCP tool — manage with recall/remember/forget):",
+    ]
+    for m in memories:
+        tag = f" [{m['tags']}]" if m.get("tags") else ""
+        lines.append(f"- {m['text']}{tag}")
+    return DEFAULT_APPEND_SYSTEM_PROMPT + "\n".join(lines) + "\n"

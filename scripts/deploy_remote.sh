@@ -175,6 +175,7 @@ check filesystem npx -y @modelcontextprotocol/server-filesystem /tmp
 check colab      src/colab_mcp/.venv/bin/python -m colab_mcp.colab_server
 check research   .venv/bin/python -m research_mcp.server
 check ds         .venv/bin/python -m ds_mcp.server
+check memory     .venv/bin/python -m ds_agent.agent_mcp
 '" || echo "  (MCP verification had failures — check output above)"
 
 echo "==> [5/6] Verifying kaggle remote MCP (Bearer token from .env)"
