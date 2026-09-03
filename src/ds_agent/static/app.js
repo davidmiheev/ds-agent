@@ -66,8 +66,8 @@ function chatApp() {
         const first = (this.pickerProviders.openrouter || [])[0];
         if (first) this.pickerModel = first.id;
       } catch (e) {
-        this.pickerProviders = { openrouter: [{ id: 'anthropic/claude-sonnet-4-5', label: 'Claude Sonnet 4.5', tag: 'default', ctx: 1000000 }] };
-        this.pickerModel = 'anthropic/claude-sonnet-4-5';
+        this.pickerProviders = { openrouter: [{ id: 'anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5', tag: 'default', ctx: 1000000 }] };
+        this.pickerModel = 'anthropic/claude-sonnet-4.5';
       }
     },
 

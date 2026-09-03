@@ -21,6 +21,12 @@ _active: dict[str, "ActiveSession"] = {}
 _active_locks: dict[str, asyncio.Lock] = {}
 
 
+def _new_set_event() -> asyncio.Event:
+    ev = asyncio.Event()
+    ev.set()
+    return ev
+
+
 @dataclass
 class ActiveSession:
     session_id: str
@@ -33,6 +39,23 @@ class ActiveSession:
     # result frame). The stream watchdog is only armed while this is set, so
     # idle time between turns never triggers a false timeout.
     turn_active: bool = False
+    # Set whenever no turn is in flight; cleared the moment the steer pump
+    # sends a query(). The pump waits on this before sending the next queued
+    # message, so a message that arrives while a turn is still generating is
+    # held until that turn's result frame lands instead of being injected
+    # into the CLI's stdin mid-turn (which caused replies to answer the
+    # wrong queued question — see _steer_pump).
+    turn_done: asyncio.Event = field(default_factory=_new_set_event)
+    # Single shared reader over active.client.receive_messages(), started
+    # lazily and fanned out to every stream_events() subscriber (web UI WS,
+    # Telegram, ...). Do NOT let callers spin up their own reader per call —
+    # two tasks iterating the same SDK message stream race for each message,
+    # so whichever consumer doesn't win a given message just never sees it
+    # (and its watchdog then "recovers" a turn that was actually fine,
+    # interrupting the other consumer's in-flight turn). See docs/debug_notes.md
+    # "simultaneous web UI + Telegram" incident.
+    _engine_task: asyncio.Task | None = field(default=None, repr=False)
+    _subscribers: list[asyncio.Queue] = field(default_factory=list, repr=False)
 
 
 def _new_id() -> str:
@@ -364,9 +387,26 @@ async def get_context_usage(active: ActiveSession) -> dict:
     See isAutoCompactEnabled / autoCompactThreshold in the response.
     """
     try:
-        return await active.client.get_context_usage()
+        usage = await active.client.get_context_usage()
     except Exception as e:
         return {"error": str(e)}
+
+    # The underlying Claude Code CLI only knows real context-window sizes for
+    # Claude models; routed through OpenRouter to a non-Anthropic model (GPT-5,
+    # Gemini, ...) it silently reports Claude's own 200K window instead of the
+    # real one. Correct maxTokens/percentage using OpenRouter's live per-model
+    # context_length when we have it (see model_catalog.get_model_context_window).
+    if active.db_row.get("provider") == "openrouter":
+        from . import model_catalog
+        real_ctx = model_catalog.get_model_context_window(active.db_row.get("model", ""))
+        if real_ctx and usage.get("maxTokens") != real_ctx:
+            usage = dict(usage)
+            total = usage.get("totalTokens", 0) or 0
+            usage["maxTokens"] = real_ctx
+            usage["rawMaxTokens"] = real_ctx
+            usage["contextWindow"] = real_ctx
+            usage["percentage"] = min(100.0, (total / real_ctx) * 100)
+    return usage
 
 
 async def compact_now(active: ActiveSession) -> dict:
@@ -384,15 +424,36 @@ async def compact_now(active: ActiveSession) -> dict:
         return {"error": str(e)}
 
 
-async def stream_events(active: ActiveSession) -> Any:
-    """Async generator over SDK messages, with tool-result content rewriting.
+# Sentinel broadcast to every subscriber when the shared engine stops
+# (client disconnected cleanly, or unrecoverably). Distinct from a real
+# payload so stream_events() knows to end its generator rather than yield it.
+_ENGINE_STOPPED = object()
 
-    Each yielded item is a dict ready to JSON-serialize for the WebSocket.
 
-    This generator is long-lived: it survives across multiple turns (the SDK
-    stream stays open; each query() produces a result frame but the stream
-    continues). A watchdog detects hung turns (model call or MCP tool that
-    never responds) and attempts recovery via interrupt → respawn.
+def _broadcast(active: ActiveSession, item: Any) -> None:
+    for q in list(active._subscribers):
+        q.put_nowait(item)
+
+
+def _ensure_engine_started(active: ActiveSession) -> None:
+    """Start the single shared reader/watchdog task for this session, if not
+    already running. Idempotent — safe to call from every stream_events()
+    caller (web UI WS connect, each Telegram message, ...)."""
+    if active._engine_task is None or active._engine_task.done():
+        active._engine_task = asyncio.create_task(_run_turn_engine(active))
+
+
+async def _run_turn_engine(active: ActiveSession) -> None:
+    """The one reader over active.client.receive_messages() for this session.
+
+    Every stream_events() caller subscribes to this instead of reading the
+    SDK stream itself — two readers on the same stream race for each
+    message, so a consumer that loses the race just never sees the reply it
+    was waiting on (and its watchdog then "recovers" a turn that was actually
+    fine, interrupting the other consumer's real one). See docs/debug_notes.md.
+
+    A watchdog detects hung turns (model call or MCP tool that never
+    responds) and attempts recovery via interrupt → respawn.
     """
     sender = asyncio.create_task(_steer_pump(active))
     q: asyncio.Queue = asyncio.Queue()
@@ -419,29 +480,31 @@ async def stream_events(active: ActiveSession) -> Any:
                     continue
                 # A turn is in flight but nothing arrived for TURN_INACTIVITY_TIMEOUT.
                 # The model call or an MCP tool is hung. Try to interrupt.
-                yield {"type": "system", "subtype": "watchdog",
-                       "message": f"no response for {int(core.TURN_INACTIVITY_TIMEOUT)}s — interrupting stuck turn"}
+                _broadcast(active, {"type": "system", "subtype": "watchdog",
+                       "message": f"no response for {int(core.TURN_INACTIVITY_TIMEOUT)}s — interrupting stuck turn"})
                 await interrupt(active)
                 try:
                     item = await asyncio.wait_for(q.get(), timeout=core.TURN_RECOVERY_TIMEOUT)
                 except asyncio.TimeoutError:
                     # Interrupt didn't produce a result. Check if the CLI died.
                     if not client_alive(active):
-                        yield {"type": "system", "subtype": "watchdog",
-                               "message": "agent process died — restarting session"}
+                        _broadcast(active, {"type": "system", "subtype": "watchdog",
+                               "message": "agent process died — restarting session"})
                         try:
                             await respawn(active)
                         except Exception as e:
-                            yield {"type": "error", "message": f"respawn failed: {e}"}
+                            _broadcast(active, {"type": "error", "message": f"respawn failed: {e}"})
                             return
                         # Restart the pump with the fresh client.
                         pump_task.cancel()
                         pump_task = asyncio.create_task(_pump())
                         active.turn_active = False
+                        active.turn_done.set()
                         continue
-                    yield {"type": "error",
-                           "message": "turn timed out and could not be recovered — try sending again"}
+                    _broadcast(active, {"type": "error",
+                           "message": "turn timed out and could not be recovered — try sending again"})
                     active.turn_active = False
+                    active.turn_done.set()
                     continue
                 except StopAsyncIteration:
                     return
@@ -449,7 +512,8 @@ async def stream_events(active: ActiveSession) -> Any:
             if item is None:
                 return  # stream ended (client disconnected cleanly)
             if isinstance(item, Exception):
-                raise item
+                _broadcast(active, {"type": "error", "message": str(item)})
+                continue
 
             payload = _serialize(item)
             if payload.get("type") == "user":
@@ -460,10 +524,65 @@ async def stream_events(active: ActiveSession) -> Any:
             if payload.get("type") == "result":
                 _record_result_usage(active.session_id, item)
                 active.turn_active = False
-            yield payload
+                active.turn_done.set()
+            _broadcast(active, payload)
     finally:
         sender.cancel()
         pump_task.cancel()
+        _broadcast(active, _ENGINE_STOPPED)
+
+
+def subscribe(active: ActiveSession) -> asyncio.Queue:
+    """Register a fan-out subscriber and ensure the shared engine is running.
+
+    This is synchronous and takes effect immediately — unlike stream_events()
+    (an async generator, lazy: nothing in its body runs until first
+    iterated). If you're about to send a message and then watch for its
+    reply, call subscribe() *before* send_user_message(): otherwise, when the
+    engine is already running (e.g. a web UI tab has the session open), the
+    steer pump can dispatch and finish your turn before your subscription
+    exists, and you silently miss your own reply. See docs/debug_notes.md
+    "simultaneous web UI + Telegram" incident.
+    """
+    _ensure_engine_started(active)
+    q: asyncio.Queue = asyncio.Queue()
+    active._subscribers.append(q)
+    return q
+
+
+async def stream_from(active: ActiveSession, q: asyncio.Queue) -> Any:
+    """Consume a subscription created by subscribe()."""
+    try:
+        while True:
+            item = await q.get()
+            if item is _ENGINE_STOPPED:
+                return
+            yield item
+    finally:
+        try:
+            active._subscribers.remove(q)
+        except ValueError:
+            pass
+
+
+async def stream_events(active: ActiveSession) -> Any:
+    """Subscribe to this session's shared message stream and consume it.
+
+    Each yielded item is a dict ready to JSON-serialize for the WebSocket.
+    Multiple callers (a web UI WebSocket connection, a Telegram turn) can
+    subscribe concurrently and safely — they all see the same frames, fanned
+    out from the single shared reader (see _run_turn_engine). Do not read
+    active.client.receive_messages() directly from anywhere else.
+
+    Convenience wrapper for callers that subscribe and immediately start
+    listening with nothing sent in between (e.g. a fresh WS connection before
+    its own receive loop starts). If you need to send a message and then
+    listen for the reply, use subscribe() + stream_from() instead so you
+    register before you send — see subscribe()'s docstring.
+    """
+    q = subscribe(active)
+    async for item in stream_from(active, q):
+        yield item
 
 
 def _record_result_usage(sid: str, msg: Any) -> None:
@@ -527,15 +646,27 @@ def _record_result_usage(sid: str, msg: Any) -> None:
 
 
 async def _steer_pump(active: ActiveSession) -> None:
-    """Drain the steer queue: when a 'user' message arrives, call client.query()."""
+    """Drain the steer queue: when a 'user' message arrives, call client.query().
+
+    Waits for any in-flight turn to finish (turn_done) before sending the
+    next queued message. Without this, a message that arrives while the CLI
+    is still generating a reply to an earlier one gets query()'d straight
+    into the same in-flight turn — the model picks it up mid-generation but
+    the final reply can still address the older question, silently dropping
+    the answer to the newer one. Queuing strictly after turn completion
+    makes each message its own turn instead of racing an active one.
+    """
     while True:
         item = await active.pending_steer.get()
         if item.get("type") == "user":
+            await active.turn_done.wait()
+            active.turn_done.clear()
             active.turn_active = True
             try:
                 await active.client.query(item["text"])
             except Exception:
                 active.turn_active = False
+                active.turn_done.set()
 
 
 def _serialize(msg: Any) -> dict:

@@ -20,7 +20,7 @@ async def main():
 
     req = urllib.request.Request(
         "http://127.0.0.1:8765/v1/sessions",
-        data=json.dumps({"provider": "openrouter", "model": "anthropic/claude-sonnet-4-5"}).encode(),
+        data=json.dumps({"provider": "openrouter", "model": "anthropic/claude-sonnet-4.5"}).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
     )

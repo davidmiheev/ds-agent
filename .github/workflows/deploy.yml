@@ -1,0 +1,118 @@
+name: Deploy to Remote Host
+
+# Wraps scripts/deploy_remote.sh: rsyncs the project to a remote Ubuntu/Debian
+# VPS, installs Node/uv/venvs/MCPs, and (re)starts the `coding-agent` systemd
+# service. Runs automatically on push to main, or on demand via the Actions
+# tab (workflow_dispatch), where the target host/user/port/dir/app-port can
+# be overridden for that single run.
+#
+# Required repository secrets:
+#   SSH_PRIVATE_KEY   - private key for the deploy SSH user
+#   DEPLOY_HOST        - default remote IP/hostname (can be overridden per-run
+#                         via the "remote_host" workflow_dispatch input)
+#   ENV_FILE            - full contents of the .env file to deploy
+#
+# Optional secrets (fall back to scripts/deploy_remote.sh's own defaults):
+#   REMOTE_USER   (default: root)
+#   REMOTE_PORT   (default: 22)
+#   REMOTE_DIR    (default: /opt/coding-agent)
+#   APP_PORT      (default: 8765)
+#   COLAB_TOKEN_JSON - contents of ~/.config/colab-cli/token.json, copied to
+#                      the remote so Colab MCP doesn't need a fresh OAuth flow
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      remote_host:
+        description: "Remote host IP/hostname (overrides the DEPLOY_HOST secret for this run)"
+        required: false
+      remote_user:
+        description: "SSH user (overrides REMOTE_USER secret / script default 'root')"
+        required: false
+      remote_port:
+        description: "SSH port (overrides REMOTE_PORT secret / script default '22')"
+        required: false
+      remote_dir:
+        description: "Install directory on remote (overrides REMOTE_DIR secret / script default '/opt/coding-agent')"
+        required: false
+      app_port:
+        description: "App port (overrides APP_PORT secret / script default '8765')"
+        required: false
+
+concurrency:
+  group: deploy-remote-host
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve remote host
+        env:
+          INPUT_HOST: ${{ github.event.inputs.remote_host }}
+          SECRET_HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          HOST="${INPUT_HOST:-$SECRET_HOST}"
+          if [ -z "$HOST" ]; then
+            echo "::error::No remote host given. Pass the 'remote_host' input on a manual run, or set the DEPLOY_HOST repository secret."
+            exit 1
+          fi
+          echo "REMOTE_HOST=$HOST" >> "$GITHUB_ENV"
+
+      - name: Write .env from secret
+        env:
+          ENV_FILE_CONTENTS: ${{ secrets.ENV_FILE }}
+        run: |
+          if [ -z "$ENV_FILE_CONTENTS" ]; then
+            echo "::error::ENV_FILE repository secret is not set (should hold the full contents of your .env)."
+            exit 1
+          fi
+          printf '%s\n' "$ENV_FILE_CONTENTS" > .env
+          chmod 600 .env
+
+      - name: Set up deploy SSH key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          if [ -z "$DEPLOY_SSH_KEY" ]; then
+            echo "::error::SSH_PRIVATE_KEY repository secret is not set."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Restore Colab OAuth token (optional)
+        env:
+          COLAB_TOKEN_JSON: ${{ secrets.COLAB_TOKEN_JSON }}
+        run: |
+          if [ -z "$COLAB_TOKEN_JSON" ]; then
+            echo "No COLAB_TOKEN_JSON secret set, skipping."
+            exit 0
+          fi
+          mkdir -p ~/.config/colab-cli
+          printf '%s\n' "$COLAB_TOKEN_JSON" > ~/.config/colab-cli/token.json
+          chmod 600 ~/.config/colab-cli/token.json
+
+      - name: Deploy via scripts/deploy_remote.sh
+        env:
+          REMOTE_USER: ${{ github.event.inputs.remote_user || secrets.REMOTE_USER }}
+          REMOTE_PORT: ${{ github.event.inputs.remote_port || secrets.REMOTE_PORT }}
+          REMOTE_DIR: ${{ github.event.inputs.remote_dir || secrets.REMOTE_DIR }}
+          APP_PORT: ${{ github.event.inputs.app_port || secrets.APP_PORT }}
+        run: |
+          bash scripts/deploy_remote.sh "$REMOTE_HOST" ~/.ssh/deploy_key
+
+      - name: Clean up secrets from runner
+        if: always()
+        run: |
+          rm -f ~/.ssh/deploy_key .env ~/.config/colab-cli/token.json

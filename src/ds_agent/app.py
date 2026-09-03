@@ -81,16 +81,25 @@ templates.env.globals["asset"] = _asset
 
 
 # --------------------------------------------------------------------- auth --
+def _otp_mode() -> bool:
+    """Telegram OTP replaces the static password whenever it's configured."""
+    return telegram.otp_enabled()
+
+
+def _auth_required() -> bool:
+    return bool(core.APP_PASSWORD) or _otp_mode()
+
+
 def _is_authed(request: Request) -> bool:
+    if not _auth_required():
+        return True
     token = request.cookies.get("sid", "")
     return db.check_cookie(token)
 
 
 def require_auth(request: Request) -> None:
     if not _is_authed(request):
-        if core.APP_PASSWORD:
-            raise HTTPException(status_code=401, detail="login required")
-        # no password: anyone is "authed", but the session is still gated by APP_PASSWORD absence
+        raise HTTPException(status_code=401, detail="login required")
 
 
 @app.middleware("http")
@@ -98,7 +107,7 @@ async def auth_gate(request: Request, call_next):
     path = request.url.path
     if path.startswith(("/static", "/login", "/logout", "/healthz")):
         return await call_next(request)
-    if not _is_authed(request) and core.APP_PASSWORD:
+    if not _is_authed(request):
         if path.startswith("/v1/") or path in ("/", "/settings"):
             return RedirectResponse("/login", status_code=303)
     return await call_next(request)
@@ -106,9 +115,9 @@ async def auth_gate(request: Request, call_next):
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    if not core.APP_PASSWORD or _is_authed(request):
+    if not _auth_required() or _is_authed(request):
         return RedirectResponse("/")
-    return templates.TemplateResponse(request, "login.html", {})
+    return templates.TemplateResponse(request, "login.html", {"otp_enabled": _otp_mode()})
 
 
 # ------------------------------------------------- login rate limiting (brute-force defense) --
@@ -117,6 +126,12 @@ async def login_page(request: Request):
 LOGIN_MAX_FAILURES = 5
 LOGIN_WINDOW_SECONDS = 3600
 _login_failures: dict[str, list[float]] = {}
+
+# OTP config: code lifetime, resend cooldown, verify-attempt cap.
+OTP_TTL_SECONDS = 300
+OTP_RESEND_COOLDOWN_SECONDS = 30
+OTP_MAX_ATTEMPTS = 5
+_otp_last_sent: dict[str, float] = {}  # per-IP resend cooldown, process-local
 
 
 def _client_ip(request: Request) -> str:
@@ -136,7 +151,9 @@ def _login_blocked(ip: str) -> bool:
 
 @app.post("/login")
 async def login_submit(request: Request, password: str = Form(...)):
-    if not core.APP_PASSWORD:
+    # Telegram OTP replaces password auth once configured — this endpoint is
+    # only reachable (and only renders) when it isn't.
+    if _otp_mode() or not core.APP_PASSWORD:
         return RedirectResponse("/", status_code=303)
     ip = _client_ip(request)
     if _login_blocked(ip):
@@ -151,6 +168,78 @@ async def login_submit(request: Request, password: str = Form(...)):
             request, "login.html", {"error": "wrong password"}, status_code=401
         )
     _login_failures.pop(ip, None)  # success → clear the counter
+    tok = db.make_cookie_token()
+    resp = RedirectResponse("/", status_code=303)
+    kwargs = {"httponly": True, "samesite": "lax"}
+    if core.APP_PUBLIC:
+        kwargs["secure"] = True
+    resp.set_cookie("sid", tok, **kwargs)
+    return resp
+
+
+@app.post("/login/otp/request")
+async def login_otp_request(request: Request):
+    """Generate and send a one-time login code to the configured Telegram chat."""
+    if not _otp_mode():
+        raise HTTPException(404, "Telegram OTP login is not configured")
+    if _is_authed(request):
+        return RedirectResponse("/", status_code=303)
+
+    ip = _client_ip(request)
+    now = time.time()
+    wait = OTP_RESEND_COOLDOWN_SECONDS - (now - _otp_last_sent.get(ip, 0))
+    if wait > 0:
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"otp_enabled": True, "sent": True, "error": f"please wait {int(wait)}s before requesting another code"},
+        )
+
+    import secrets as _secrets, hashlib
+    code = f"{_secrets.randbelow(1_000_000):06d}"
+    if not await telegram.send_otp_code(code):
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"otp_enabled": True, "error": "failed to send code via Telegram — check TELEGRAM_BOT_TOKEN / the OTP chat id"},
+            status_code=502,
+        )
+    db.set_login_otp(hashlib.sha256(code.encode()).hexdigest(), OTP_TTL_SECONDS)
+    _otp_last_sent[ip] = now
+    return templates.TemplateResponse(request, "login.html", {"otp_enabled": True, "sent": True})
+
+
+@app.post("/login/otp/verify")
+async def login_otp_verify(request: Request, code: str = Form(...)):
+    if not _otp_mode():
+        raise HTTPException(404, "Telegram OTP login is not configured")
+
+    ip = _client_ip(request)
+    if _login_blocked(ip):
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"otp_enabled": True, "sent": True, "error": "too many failed attempts, try again later"},
+            status_code=429,
+        )
+
+    import hashlib, hmac as _hmac
+    now = time.time()
+    row = db.get_login_otp()
+    expired = row is None or now >= row["expires_at"]
+    valid = (
+        not expired
+        and row["attempts"] < OTP_MAX_ATTEMPTS
+        and _hmac.compare_digest(hashlib.sha256(code.strip().encode()).hexdigest(), row["code_hash"])
+    )
+    if not valid:
+        if row is not None:
+            db.bump_otp_attempts()
+        _login_failures.setdefault(ip, []).append(now)
+        err = "code expired or not requested yet — send a new one" if expired else "wrong code"
+        return templates.TemplateResponse(
+            request, "login.html", {"otp_enabled": True, "sent": True, "error": err}, status_code=401,
+        )
+
+    _login_failures.pop(ip, None)
+    db.clear_login_otp()
     tok = db.make_cookie_token()
     resp = RedirectResponse("/", status_code=303)
     kwargs = {"httponly": True, "samesite": "lax"}
@@ -446,7 +535,7 @@ async def upload_dataset(sid: str, file: UploadFile = File(...)):
 # ------------------------------------------------------ WebSocket bridge ---
 @app.websocket("/ws/sessions/{sid}")
 async def ws_session(ws: WebSocket, sid: str):
-    if core.APP_PASSWORD and not db.check_cookie(ws.cookies.get("sid", "")):
+    if _auth_required() and not db.check_cookie(ws.cookies.get("sid", "")):
         await ws.close(code=4401)
         return
     await ws.accept()
@@ -460,6 +549,12 @@ async def ws_session(ws: WebSocket, sid: str):
 
     active.in_use = True
     reader_task = None
+    # Subscribe before anything else on this connection (including the greet
+    # send below) — a message sent moments later via this WS's receive loop
+    # could otherwise be dispatched and answered (by an already-running
+    # shared engine, e.g. a concurrent Telegram turn) before this connection
+    # is listening for the reply. See sessions.subscribe()'s docstring.
+    sub_q = sessions.subscribe(active)
     try:
         # Greet
         await ws.send_text(json.dumps({
@@ -473,7 +568,7 @@ async def ws_session(ws: WebSocket, sid: str):
 
         async def reader():
             try:
-                async for frame in sessions.stream_events(active):
+                async for frame in sessions.stream_from(active, sub_q):
                     # Forward all frame types; artifact rewriting already happened
                     # in stream_events. Skip only the keepalive 'result' type's
                     # internal subtypes that the UI doesn't need.

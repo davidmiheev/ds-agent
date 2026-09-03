@@ -12,8 +12,8 @@ from typing import Any
 # offline. Order = shown order in dropdown.
 CURATED: dict[str, list[dict]] = {
     "openrouter": [
-        {"id": "anthropic/claude-sonnet-4-5",       "label": "Claude Sonnet 4.5 (smartest general)",   "tag": "default",  "ctx": 1_000_000},
-        {"id": "anthropic/claude-haiku-4-5",        "label": "Claude Haiku 4.5 (fast, cheap)",         "tag": "fastest",  "ctx": 200_000},
+        {"id": "anthropic/claude-sonnet-4.5",       "label": "Claude Sonnet 4.5 (smartest general)",   "tag": "default",  "ctx": 1_000_000},
+        {"id": "anthropic/claude-haiku-4.5",        "label": "Claude Haiku 4.5 (fast, cheap)",         "tag": "fastest",  "ctx": 200_000},
         {"id": "openai/gpt-5",                      "label": "GPT-5",                                  "tag": "smartest", "ctx": 400_000},
         {"id": "openai/gpt-5-mini",                 "label": "GPT-5 mini (fast)",                      "tag": "fastest",  "ctx": 400_000},
         {"id": "openai/o3",                         "label": "o3 (deep reasoning)",                    "tag": "reasoning","ctx": 200_000},
@@ -40,11 +40,26 @@ CURATED: dict[str, list[dict]] = {
 
 
 _PRICING_CACHE: dict[str, dict] = {}
+_CTX_CACHE: dict[str, int] = {}
 
 
 def get_model_pricing(model_id: str) -> dict | None:
     """Return cached per-token pricing for a model or None."""
     return _PRICING_CACHE.get(model_id)
+
+
+def get_model_context_window(model_id: str) -> int | None:
+    """Return the real context window for an OpenRouter model id, or None.
+
+    Populated from OpenRouter's live catalog (see openrouter_live_models()),
+    which is the one place we have accurate, per-model context-length data.
+    The Claude Agent SDK's own context accounting can't be trusted for this:
+    the underlying Claude Code CLI only recognizes Claude model context sizes
+    and silently reports Claude's own 200K window for any other model routed
+    through an Anthropic-compatible gateway (e.g. GPT-5, Gemini via
+    OpenRouter) - this is what fixes that for the UI's context-fill display.
+    """
+    return _CTX_CACHE.get(model_id)
 
 
 async def openrouter_live_models(api_key: str | None = None, timeout: float = 4.0) -> list[dict] | None:
@@ -77,6 +92,8 @@ async def openrouter_live_models(api_key: str | None = None, timeout: float = 4.
         pricing = m.get("pricing", {}) or {}
         if pricing:
             _PRICING_CACHE[mid] = pricing
+        if ctx:
+            _CTX_CACHE[mid] = ctx
 
         prompt = float(pricing.get("prompt") or 0) * 1_000_000
         tag = "default"

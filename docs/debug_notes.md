@@ -160,6 +160,185 @@ the hang is on the model API, not a tool.
   silently never set. Now `resume=_sdk_session_id(workspace)` = newest
   transcript's stem.
 
+## Concurrent web UI + Telegram on the same session: races, misrouted replies, spurious interrupts (2026-09-03)
+
+**Symptom**: with a web UI tab open on a session, sending a Telegram message
+to that same session got "strangely interrupted", and a follow-up message
+got no response at all — a recurrence of the bug below, on the same session
+(`c0b22fad52fa452b`), even after the "always notify" telegram.py fix landed.
+
+**Root cause**: `stream_events(active)` was called independently by every
+consumer — once per WebSocket connection in `app.py`, and freshly on *every
+single Telegram message* in `telegram.py`. Each call spawned its own
+`_pump()` task doing `async for msg in active.client.receive_messages()`.
+When a web UI tab and a Telegram turn were both alive on the same
+`ActiveSession`, **two tasks iterated the same SDK message stream
+concurrently** — an unsupported, racy pattern. Whichever task happened to
+be scheduled to receive a given message got it; the other consumer never
+saw it. Concretely:
+- If Telegram's reply landed in the web UI's private queue instead of
+  Telegram's, Telegram's own watchdog (armed because `turn_active` is
+  true but *its* queue got nothing) fired after `TURN_INACTIVITY_TIMEOUT`
+  and called `interrupt()` — killing the turn the web UI was actually
+  receiving fine. That's the "strangely interrupted" symptom.
+- After such an interrupt, if the CLI process died, `respawn()` swapped in
+  a fresh client but the original queued message was never resent — silently
+  dropped. Next message to the session: still nothing, because the reply to
+  *that* one could just as easily be won by the other consumer's queue.
+
+**Fix** (`sessions.py`): replaced the per-caller reader with a single shared
+engine per `ActiveSession`, `_run_turn_engine()`, started lazily and exactly
+once (`_ensure_engine_started`). It owns the one `_pump()` reading
+`active.client.receive_messages()`, the one `_steer_pump()` sender, and the
+watchdog/interrupt/respawn logic — and fans out every frame
+(`_broadcast()`) to all currently-registered subscriber queues. Callers no
+longer read the SDK stream directly; they call `subscribe()` to register a
+queue and `stream_from()`/`stream_events()` to consume it. `app.py` and
+`telegram.py` were switched to this. A useful side effect: a web UI tab and
+a Telegram chat on the same session now see the *same* live stream, instead
+of racing for it.
+
+**Second, subtler race this exposed**: `stream_events()`/`subscribe()`
+registers a subscriber queue — but `stream_events()` is a lazy async
+generator, so *nothing in its body runs* (including registering the queue)
+until it's first iterated. If the shared engine is already running (e.g. a
+web UI tab already has the session open) and a caller calls
+`send_user_message()` before it starts iterating `stream_events()`, the
+already-running `_steer_pump` can dispatch and finish that turn before the
+caller's subscription exists — the caller then waits forever for a reply it
+already missed. Fixed by splitting `subscribe()` out as a **synchronous**
+call (registers immediately, no lazy generator involved) that both
+`app.py::ws_session` and `telegram.py::_run_agent_turn_for_telegram` now
+call *before* `send_user_message()` / before their receive loop can call it.
+
+**Known remaining limitation**: if two *genuinely overlapping* turns happen
+to be in flight from different interfaces at nearly the same moment, a
+freshly-subscribing consumer can still observe the tail of the *other*
+interface's already-in-flight turn (including its `result` frame) before
+its own turn is dispatched, and misattribute that result as its own reply.
+Turns are already serialized session-wide (`turn_done`, see the entry
+below), so this window is narrow, but fully closing it needs per-turn
+correlation (tagging each result with which enqueued message produced it),
+which is a bigger change than this fix. Not yet done.
+
+## Telegram: turn completes silently, no reply ever arrives (2026-09-03)
+
+**Symptom**: user reported sending a message into session `c0b22fad52fa452b`
+("Telegram Session 11") via Telegram and getting no response at all — not
+even an error.
+
+**Root cause chain**:
+1. That session's model was `openrouter` / `google/gemma-4-31b-it` — the
+   exact same id from the "Stuck agent incident (2026-08-26)" above.
+   **Correction**: an earlier version of this note called this id
+   "nonexistent"/"hallucinated" — that was wrong. Checked directly against
+   OpenRouter's live `/api/v1/models` catalog (2026-09-03): it's real
+   (`google/gemma-4-31b-it`, plus `:free`/`:batch` variants). The actual
+   problem is that the *bundled Claude Code CLI* (pinned via
+   `claude-agent-sdk>=0.2.144`, CLI `2.1.251` on this host) has its own
+   internal model-recognition list that predates Gemma 4 and doesn't know
+   the id — it logs `[claude-code:unrecognized_model]` and then, rather than
+   failing fast or passing the request through as-is, the call to
+   OpenRouter just hangs with no bytes ever coming back. This is a
+   CLI/SDK-version limitation, not a bad model choice — `${CLAUDE_CODE_ENABLE_
+   GATEWAY_MODEL_DISCOVERY}=1` (already set for openrouter, see
+   `providers.py`) does not prevent it.
+2. The session's `.claude/projects/.../` dir was created (CLI spawned) but
+   never got a transcript `.jsonl` — consistent with the very first query
+   hanging before anything was ever written, exactly like the original
+   incident.
+3. The stuck-agent watchdog (`sessions.stream_events`,
+   `TURN_INACTIVITY_TIMEOUT=300s`) exists precisely to recover from this —
+   but recovery (interrupt, or interrupt+respawn) produces a **`result`
+   frame with no assistant text**. That surfaces fine in the web UI (which
+   shows the turn ended), but `telegram.py::_run_agent_turn_for_telegram`'s
+   `result` handler only calls `send_message` **if `final_text` is
+   non-empty** and only sends artifacts if any `.png` appeared — if neither,
+   it silently `return`s. So a turn that hangs, gets recovered by the
+   watchdog, and comes back empty produces **zero** Telegram output — from
+   the user's side this is indistinguishable from the bot being dead.
+4. Separately, journalctl shows this host has frequent transient breakage
+   talking to `api.telegram.org` (`Connection reset by peer`, `SSL
+   handshake operation timed out`, roughly every 10-40 min). `TelegramAPI`
+   catches all of that in `_request` and just returns `{"ok": False}` — no
+   retry. A single blip on the one `send_message` call meant to report a
+   turn error/timeout means that message is lost forever too.
+
+**Fix** (`telegram.py`):
+- `_run_agent_turn_for_telegram`'s `result` handler now sends an explicit
+  "turn finished without producing a reply" fallback message when there's
+  no text and no artifact — the user always gets *something*, even for a
+  botched/interrupted turn.
+- `TelegramAPI._request`/`call` gained a `retries` param (default 1 retry,
+  1.5s apart) so a transient network blip on `sendMessage`/`sendPhoto`
+  doesn't silently eat the message. `getUpdates` explicitly passes
+  `retries=0` — it's a 30s long-poll already retried by the outer
+  `run_bot_polling` loop, so stacking a blocking retry would just double
+  the delay before that loop notices and tries again.
+
+**Not fixed here (still relevant)**: `google/gemma-4-31b-it` (and presumably
+any other model newer than the bundled CLI's recognition list) will hang
+again if reused — validating against OpenRouter's *live* catalog won't
+catch this, since the id is genuinely valid there. What would actually help:
+(a) upgrading `claude-agent-sdk`/the bundled CLI so its model list includes
+newer releases, and/or (b) a session-creation-time smoke-test query with a
+short timeout (e.g. a cheap 1-token request) so an id the CLI can't talk to
+is caught and reported in seconds instead of silently hanging the first
+real turn for `TURN_INACTIVITY_TIMEOUT` (5 min).
+
+## Telegram `/models` search only matched the first word (2026-09-03)
+
+**Symptom**: `/models gemini 3.7` behaved like `/models gemini` — the
+version qualifier was silently dropped.
+
+**Root cause**: the handler took `query = parts[1]` from
+`text.strip().split()` — i.e. only the second whitespace-separated token,
+discarding everything after it. It was also a single case-sensitive-safe
+but punctuation-strict substring check (`query.lower() in id.lower()`), so
+even a correctly-captured `"gemini 3.7"` wouldn't match an id like
+`google/gemini-3.7-flash` (no literal `"gemini 3.7"` substring — the id
+uses a hyphen, not a space).
+
+**Fix**: `query = " ".join(parts[1:])` to capture the full remainder, plus
+a new `_model_matches_query()` that normalizes both the query and the
+id+label haystack (lowercase, punctuation → spaces) and requires every
+query token to appear in the haystack (order-independent, AND-matched).
+`"gemini 3.7"`, `"GEMINI 3-7"`, and `"gemini3.7"` all now match
+`google/gemini-3.7-flash`.
+
+## claude-agent-sdk was stale, and uv.lock wasn't actually locking it (2026-09-03)
+
+Checked after suspecting the bundled CLI's model-recognition gaps
+(gemma-4-31b-it, qwen3.8-27b — see entries above) might just be a version-lag
+problem: the deployed `.venv` had `claude-agent-sdk==0.2.148`, but PyPI's
+latest was `0.2.152` (released 2026-09-02, the day before). `pyproject.toml`
+only requires `>=0.2.144`, so nothing was pinning it down — the venv was
+simply last synced before 0.2.152 shipped.
+
+**Bonus finding**: `uv.lock` was only 13 lines — just the `[[package]]` stanza
+for `ds-agent` itself, none of its dependencies actually resolved/pinned.
+A normal uv.lock for this project should have 40+ packages with hashes.
+This means a fresh `uv sync` from a clean checkout (e.g. `deploy_remote.sh`
+on a new host) wasn't getting a real reproducible resolution — every deploy
+was silently re-resolving to "whatever's latest today" rather than a locked
+set. Not clear how it got into that state; worth watching for regressions
+(check `uv.lock` has real content after any future `uv add`/`uv sync`).
+
+**Fix applied**: `uv sync --upgrade-package claude-agent-sdk` (as the `agent`
+user, from `/opt/coding-agent`) — upgrades only that package (and its own
+transitive deps: `anyio` 4.14.2→4.15.0, `sse-starlette` 3.4.8→3.4.10) rather
+than a full re-resolution that could've bumped unrelated packages. This also
+regenerated `uv.lock` properly (43 packages, real hashes) as a side effect.
+Bundled CLI went `2.1.251` → `2.1.259`. Service restarted; came up clean.
+
+**Not verified**: whether 2.1.259 actually recognizes `google/gemma-4-31b-it`
+now — that needs a real query against that model to confirm, which costs
+real API spend, so it wasn't done as part of this check. If you hit the same
+unrecognized-model hang on that model again post-upgrade, the CLI's list
+still doesn't have it and the mitigations above (watchdog + shared engine +
+Telegram fallback message) are what's carrying the failure gracefully, not
+an actual fix for that specific model.
+
 ## Git / network
 
 - **SSH to GitHub fails over IPv6** on this box: `git push` dies with

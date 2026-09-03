@@ -53,6 +53,18 @@ Current state as of 2026-08-25, right after the repo restructure
 ## Open
 
 ### High priority
+- [ ] **Models the bundled CLI doesn't recognize hang instead of failing
+      fast** (`/new <model>` in Telegram, or a raw id typed in the web
+      picker) — e.g. `google/gemma-4-31b-it`, a real, current OpenRouter
+      model (verified against the live catalog) that's simply newer than
+      the pinned `claude-agent-sdk`/CLI's internal model list — logs
+      `[claude-code:unrecognized_model]` and then hangs the first turn for
+      the full `TURN_INACTIVITY_TIMEOUT` (5 min) before the watchdog
+      recovers. See `docs/debug_notes.md` 2026-09-03. Validating against
+      OpenRouter's live catalog won't catch this (the id is genuinely
+      valid there) — needs either an SDK/CLI version bump or a
+      session-creation-time smoke-test query with a short timeout so a
+      CLI-incompatible id is caught and reported in seconds.
 - [x] `deploy/Caddyfile` was referenced in README but missing — recreated
       during the restructure (reverse proxy → 127.0.0.1:8765).
 - [ ] **`SESSION_BACKEND=docker` is declared in `core.py` but not implemented** —

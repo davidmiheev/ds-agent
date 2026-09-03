@@ -119,10 +119,40 @@ A unified search server with 12 tools for literature and biological/economic dat
 - **Bioinformatics**: `uniprot_search`, `pdb_search`, `ensembl_search`.
 
 ### 5. Telegram Bot Integration
-Interact directly with the agent from Telegram on mobile or desktop:
-- Set `TELEGRAM_BOT_TOKEN="<token>"` and optionally `TELEGRAM_ALLOWED_USERS="<id1>,<id2>"` in `.env`.
-- Supports `/new`, `/sessions`, `/switch <id>`, `/compact`, `/stop`, and `/status`.
-- Automatically renders text turns and attaches generated image plots/artifacts.
+Interact directly with the agent from Telegram on mobile or desktop. It runs
+as a background long-polling worker (`src/ds_agent/telegram.py`) alongside
+the FastAPI server whenever a bot token is configured — no separate process
+or public webhook needed.
+
+**Setup**:
+1. Create a bot with [@BotFather](https://t.me/BotFather) and grab its token.
+2. Add to `.env`:
+   ```bash
+   TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
+   # Optional whitelist of Telegram user IDs (comma-separated); if unset, anyone can use the bot
+   TELEGRAM_ALLOWED_USERS="12345678,87654321"
+   ```
+3. Start the server (`bash scripts/run_server.sh`) and message your bot on Telegram — an unauthorized user gets their numeric ID back in the denial message, handy for populating `TELEGRAM_ALLOWED_USERS`.
+
+**Commands**:
+
+| Command | Action |
+|---|---|
+| `/start`, `/help` | Welcome message and usage instructions |
+| `/models [query]` | List/filter live or curated model IDs as tappable buttons for `/new` |
+| `/provider [name]` | Show configured BYOK providers, or set the default one `/new` uses (tappable buttons, or `/provider openrouter`) |
+| `/new [model]` | Start a fresh session (defaults to `claude-sonnet-4.5` on the chat's default provider, initially OpenRouter or the first configured BYOK provider) |
+| `/sessions` | List the 10 most recent sessions, marking the active one |
+| `/switch <id>` | Switch the chat to a different session (prefix match on session ID) |
+| `/compact` | Compact the active session's context |
+| `/stop` | Interrupt the agent mid-turn |
+| `/status` | Show the active session's ID, title, model, provider, and workspace path |
+
+**Behavior**:
+- Each Telegram chat maps to one ds-agent session at a time (`/new` creates one automatically on first message if none exists), with a per-chat lock so turns don't overlap.
+- Assistant replies stream as edited messages; thinking blocks and intermediate tool narration are filtered out so only the end result is sent, with Markdown converted to Telegram-safe HTML (code blocks preserved) — the bot no longer posts a separate "Turn finished" / cost summary after every reply (check `/status` or the web UI for cost/usage).
+- Generated plots/artifacts are automatically attached as photos or documents.
+- Send a file (CSV, JSON, Parquet, `.py`, etc.) directly in chat to upload it into the active session's workspace — the agent is prompted to inspect it automatically.
 
 ---
 
@@ -205,7 +235,8 @@ Create a `.env` file in the project root:
 # Optional default provider API key
 OPENROUTER_API_KEY=sk-or-v1-...
 
-# Optional Web UI login password (leave unset for passwordless local mode)
+# Optional Web UI login password (leave unset for passwordless local mode).
+# Ignored if Telegram OTP login is configured instead — see "Web Login" below.
 APP_PASSWORD=your-secure-password
 
 # Optional FRED API key for economic data (free at https://fred.stlouisfed.org)
@@ -218,6 +249,22 @@ bash scripts/run_server.sh
 ```
 
 Open `http://localhost:8765` in your browser, create a new session, and start exploring datasets or training models.
+
+---
+
+## 🔐 Web Login
+
+Three modes, picked automatically based on what's configured:
+
+1. **Passwordless** (default): `APP_PASSWORD` unset and no Telegram OTP configured — fine for `localhost` only.
+2. **Password**: set `APP_PASSWORD` in `.env`.
+3. **Telegram one-time code** (recommended once the Telegram bot — see *Telegram Bot Integration* below — is set up; replaces the password entirely): configure `TELEGRAM_BOT_TOKEN` and either a single `TELEGRAM_ALLOWED_USERS` entry or an explicit `TELEGRAM_OTP_CHAT_ID`. The `/login` page then shows a **"send code to Telegram"** button instead of a password field — click it, a 6-digit code arrives in the chat, and entering it (within 5 minutes, up to 5 attempts, one resend per 30s) signs you in. `APP_PASSWORD` is ignored while this mode is active.
+
+```bash
+# .env — Telegram OTP login (no APP_PASSWORD needed)
+TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
+TELEGRAM_ALLOWED_USERS="12345678"   # single ID → also used as the OTP recipient
+```
 
 ---
 
@@ -264,7 +311,7 @@ ds-agent/
 │
 ├── deploy/
 │   └── Caddyfile             # 5-line Caddy reverse proxy configuration with automatic TLS
-├── docs/                     # Architecture notes (arch.md) and roadmap (todo.md)
+├── docs/                     # Architecture notes (arch.md), roadmap (todo.md), CI/CD docs (ci-cd.md)
 ├── scripts/
 │   ├── run_server.sh         # Startup script on port 8765 (with auto port-reclaim)
 │   ├── install_ds_env.sh     # Installer for dedicated ~/.coding-agent/ds-env
@@ -324,7 +371,7 @@ The script:
    restart on failure).
 7. Health-checks `/healthz` and verifies every MCP server with an initialize handshake.
 
-Then open `http://<REMOTE_IP>:8765` and log in with your `APP_PASSWORD`.
+Then open `http://<REMOTE_IP>:8765` and log in — with your `APP_PASSWORD`, or via a Telegram one-time code if you configured that instead (see *Web Login* above).
 
 Useful on the remote:
 ```bash
@@ -332,8 +379,12 @@ systemctl status coding-agent      # service state
 journalctl -u coding-agent -f      # live logs
 ```
 
-> **Note on Colab OAuth:** Colab MCP requires a Google OAuth token (`~/.config/colab-cli/token.json`).
-> Run `src/colab_mcp/.venv/bin/python src/colab_mcp/auth_once.py` locally once. The deploy script (`scripts/deploy_remote.sh`) automatically copies your local token to `/home/agent/.config/colab-cli/token.json` during deployment.
+### CI/CD: GitHub Actions Deploy Workflow
+
+`.github/workflows/deploy.yml` runs `scripts/deploy_remote.sh` automatically
+from GitHub Actions (push to `main`, or manually via `workflow_dispatch`).
+See **[docs/ci-cd.md](docs/ci-cd.md)** for the required repository secrets
+and how it's configured.
 
 ### Manual / HTTPS Deployment
 
