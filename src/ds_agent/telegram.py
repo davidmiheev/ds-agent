@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 import urllib.parse
@@ -205,7 +206,7 @@ class TelegramAPI:
         self.token = token
         self.base_url = f"https://api.telegram.org/bot{token}"
 
-    def _request(self, method: str, data: dict | None = None, files: dict | None = None) -> dict:
+    def _request(self, method: str, data: dict | None = None, files: dict | None = None, retries: int = 1) -> dict:
         url = f"{self.base_url}/{method}"
         if files:
             # Multipart form-data for uploading documents/photos
@@ -234,15 +235,25 @@ class TelegramAPI:
                 url, data=payload, headers={"Content-Type": "application/json"}
             )
 
-        try:
-            with urllib.request.urlopen(req, timeout=35) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except Exception as e:
-            logger.error("Telegram API %s failed: %s", method, e)
-            return {"ok": False, "description": str(e)}
+        # This host sees frequent transient network blips to api.telegram.org
+        # (connection reset, TLS handshake timeout — see docs/debug_notes.md).
+        # A single blip on a one-shot call like sendMessage used to be dropped
+        # silently with no retry, which could leave the user with literally no
+        # response even when the agent turn itself worked fine.
+        last_err: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=35) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except Exception as e:
+                last_err = e
+                if attempt < retries:
+                    time.sleep(1.5)
+        logger.error("Telegram API %s failed after %d attempt(s): %s", method, retries + 1, last_err)
+        return {"ok": False, "description": str(last_err)}
 
-    async def call(self, method: str, data: dict | None = None, files: dict | None = None) -> dict:
-        return await asyncio.to_thread(self._request, method, data, files)
+    async def call(self, method: str, data: dict | None = None, files: dict | None = None, retries: int = 1) -> dict:
+        return await asyncio.to_thread(self._request, method, data, files, retries)
 
     async def send_message(self, chat_id: int, text: str, parse_mode: str = "HTML", reply_markup: dict | None = None) -> dict:
         # Convert Markdown to HTML if parse_mode is HTML or Markdown
@@ -299,6 +310,29 @@ class TelegramAPI:
         )
 
 
+def _normalize_model_query(text: str) -> str:
+    """Lowercase and collapse punctuation/whitespace to single spaces.
+
+    Lets a query like "gemini 3.7" match an id like "google/gemini-3.7-pro"
+    (or "gemini_3_7") regardless of which separator the catalog uses.
+    """
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
+def _model_matches_query(query: str, model: dict) -> bool:
+    """True if every whitespace-separated token in `query` appears in the
+    model's id or label (order-independent, punctuation-insensitive).
+
+    Splitting into tokens (rather than one substring match) is what makes
+    multi-word queries like "gemini 3.7" work — a single `in` check against
+    "google/gemini-2.5-pro" would need the literal substring "gemini 3.7",
+    which never occurs even when the model is a good match.
+    """
+    haystack = _normalize_model_query(f"{model['id']} {model['label']}")
+    tokens = _normalize_model_query(query).split()
+    return all(tok in haystack for tok in tokens)
+
+
 def _ensure_session_for_chat(chat_id: int) -> str:
     """Return active session for chat, or create one with default provider."""
     sid = _chat_sessions.get(chat_id)
@@ -353,8 +387,9 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
 
     if cmd == "/models":
         # Check if user requested a specific category/provider or page
-        # e.g. /models [provider/query/page]
-        query = parts[1].strip() if len(parts) > 1 else ""
+        # e.g. /models [provider/query/page] — join the remaining words so
+        # multi-word queries like "gemini 3.7" aren't truncated to "gemini".
+        query = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
 
         # Fetch live OpenRouter models if openrouter key available, otherwise use curated
         live_or_models = await model_catalog.openrouter_live_models()
@@ -364,7 +399,7 @@ async def _handle_command(api: TelegramAPI, chat_id: int, text: str) -> None:
             # Filter if search query provided
             models_to_show = live_or_models
             if query:
-                models_to_show = [m for m in live_or_models if query.lower() in m["id"].lower() or query.lower() in m["label"].lower()]
+                models_to_show = [m for m in live_or_models if _model_matches_query(query, m)]
 
             total_found = len(models_to_show)
             # Display top 15 results with inline keyboard buttons for 1-click creation
@@ -599,6 +634,7 @@ async def _run_agent_turn_for_telegram(api: TelegramAPI, chat_id: int, user_text
                         await api.send_message(chat_id, final_text)
 
                     # Check for created plots / artifacts in session workspace
+                    sent_artifact = False
                     ws_dir = Path(active.db_row["workspace"])
                     if ws_dir.exists():
                         # Find recently modified image files
@@ -606,8 +642,23 @@ async def _run_agent_turn_for_telegram(api: TelegramAPI, chat_id: int, user_text
                             try:
                                 if img.stat().st_mtime >= (now - 120):  # created/modified in last 2m
                                     await api.send_photo(chat_id, img.read_bytes(), caption=img.name)
+                                    sent_artifact = True
                             except Exception:
                                 pass
+
+                    # The turn completed but produced neither text nor an
+                    # artifact — e.g. the watchdog (sessions.stream_events)
+                    # interrupted a hung model call and got back an empty
+                    # result. Without this, the user sees total silence and
+                    # has no way to tell the turn even ran (see
+                    # docs/debug_notes.md "Telegram silent-empty-turn bug").
+                    if not final_text and not sent_artifact:
+                        await api.send_message(
+                            chat_id,
+                            "⚠️ The agent turn finished without producing a reply "
+                            "(the model may be unrecognized/unresponsive — check "
+                            "`/status` or try `/new` with a different model).",
+                        )
 
                     return
         except Exception as e:
@@ -719,7 +770,10 @@ async def run_bot_polling() -> None:
 
     while True:
         try:
-            updates_res = await api.call("getUpdates", {"offset": offset, "timeout": 30, "limit": 20})
+            # retries=0: the outer while loop already retries on failure, and
+            # this is a 30s long-poll — stacking a blocking retry would just
+            # double the delay before the loop notices and retries itself.
+            updates_res = await api.call("getUpdates", {"offset": offset, "timeout": 30, "limit": 20}, retries=0)
             if not updates_res.get("ok"):
                 await asyncio.sleep(5)
                 continue

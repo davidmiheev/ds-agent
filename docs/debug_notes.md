@@ -160,6 +160,78 @@ the hang is on the model API, not a tool.
   silently never set. Now `resume=_sdk_session_id(workspace)` = newest
   transcript's stem.
 
+## Telegram: turn completes silently, no reply ever arrives (2026-09-03)
+
+**Symptom**: user reported sending a message into session `c0b22fad52fa452b`
+("Telegram Session 11") via Telegram and getting no response at all — not
+even an error.
+
+**Root cause chain**:
+1. That session's model was `openrouter` / `google/gemma-4-31b-it` — **the
+   exact same bogus model id** from the "Stuck agent incident (2026-08-26)"
+   above. It isn't a real Gemma id (Google ships `gemma-2-*`/`gemma-3-*` up
+   to 27B; there's no `gemma-4` or `31b`), and the CLI logs
+   `[claude-code:unrecognized_model]` for it. Routed through OpenRouter it
+   just hangs — no bytes ever come back.
+2. The session's `.claude/projects/.../` dir was created (CLI spawned) but
+   never got a transcript `.jsonl` — consistent with the very first query
+   hanging before anything was ever written, exactly like the original
+   incident.
+3. The stuck-agent watchdog (`sessions.stream_events`,
+   `TURN_INACTIVITY_TIMEOUT=300s`) exists precisely to recover from this —
+   but recovery (interrupt, or interrupt+respawn) produces a **`result`
+   frame with no assistant text**. That surfaces fine in the web UI (which
+   shows the turn ended), but `telegram.py::_run_agent_turn_for_telegram`'s
+   `result` handler only calls `send_message` **if `final_text` is
+   non-empty** and only sends artifacts if any `.png` appeared — if neither,
+   it silently `return`s. So a turn that hangs, gets recovered by the
+   watchdog, and comes back empty produces **zero** Telegram output — from
+   the user's side this is indistinguishable from the bot being dead.
+4. Separately, journalctl shows this host has frequent transient breakage
+   talking to `api.telegram.org` (`Connection reset by peer`, `SSL
+   handshake operation timed out`, roughly every 10-40 min). `TelegramAPI`
+   catches all of that in `_request` and just returns `{"ok": False}` — no
+   retry. A single blip on the one `send_message` call meant to report a
+   turn error/timeout means that message is lost forever too.
+
+**Fix** (`telegram.py`):
+- `_run_agent_turn_for_telegram`'s `result` handler now sends an explicit
+  "turn finished without producing a reply" fallback message when there's
+  no text and no artifact — the user always gets *something*, even for a
+  botched/interrupted turn.
+- `TelegramAPI._request`/`call` gained a `retries` param (default 1 retry,
+  1.5s apart) so a transient network blip on `sendMessage`/`sendPhoto`
+  doesn't silently eat the message. `getUpdates` explicitly passes
+  `retries=0` — it's a 30s long-poll already retried by the outer
+  `run_bot_polling` loop, so stacking a blocking retry would just double
+  the delay before that loop notices and tries again.
+
+**Not fixed here (still relevant)**: nothing validates a model id before
+spawning a session — `google/gemma-4-31b-it` will hang again if reused.
+Consider validating `/new <model>` (or button picks) against the live
+OpenRouter catalog / a known-model check before accepting it, so a bad id
+is rejected immediately instead of hanging for 5 minutes.
+
+## Telegram `/models` search only matched the first word (2026-09-03)
+
+**Symptom**: `/models gemini 3.7` behaved like `/models gemini` — the
+version qualifier was silently dropped.
+
+**Root cause**: the handler took `query = parts[1]` from
+`text.strip().split()` — i.e. only the second whitespace-separated token,
+discarding everything after it. It was also a single case-sensitive-safe
+but punctuation-strict substring check (`query.lower() in id.lower()`), so
+even a correctly-captured `"gemini 3.7"` wouldn't match an id like
+`google/gemini-3.7-flash` (no literal `"gemini 3.7"` substring — the id
+uses a hyphen, not a space).
+
+**Fix**: `query = " ".join(parts[1:])` to capture the full remainder, plus
+a new `_model_matches_query()` that normalizes both the query and the
+id+label haystack (lowercase, punctuation → spaces) and requires every
+query token to appear in the haystack (order-independent, AND-matched).
+`"gemini 3.7"`, `"GEMINI 3-7"`, and `"gemini3.7"` all now match
+`google/gemini-3.7-flash`.
+
 ## Git / network
 
 - **SSH to GitHub fails over IPv6** on this box: `git push` dies with

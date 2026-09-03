@@ -53,6 +53,13 @@ Current state as of 2026-08-25, right after the repo restructure
 ## Open
 
 ### High priority
+- [ ] **No validation of user-supplied model ids** (`/new <model>` in Telegram,
+      or a raw id typed in the web picker) — an unrecognized id (e.g. the
+      hallucinated `google/gemma-4-31b-it`, see `docs/debug_notes.md`
+      2026-09-03) hangs the first turn for the full
+      `TURN_INACTIVITY_TIMEOUT` (5 min) before the watchdog recovers.
+      Validate against the live OpenRouter catalog (or a known-model list)
+      before accepting `/new`/session creation.
 - [x] `deploy/Caddyfile` was referenced in README but missing — recreated
       during the restructure (reverse proxy → 127.0.0.1:8765).
 - [ ] **`SESSION_BACKEND=docker` is declared in `core.py` but not implemented** —
