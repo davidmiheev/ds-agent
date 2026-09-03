@@ -49,6 +49,22 @@ Current state as of 2026-08-25, right after the repo restructure
   unchanged. (colab_mcp stays on 1.x in its own venv, pinned `mcp[cli]<2`.)
 - Colab one-time OAuth helper: `src/colab_mcp/auth_once.py` (standalone, reuses
   colab-cli's public OAuth client); token at `~/.config/colab-cli/token.json`.
+- Cross-session memory & search MCP (`src/ds_agent/agent_mcp.py`, 6th MCP
+  server, wired into `mcp.json`): `list_sessions`, `search_other_sessions`,
+  `get_session_summary` let the agent find and reuse prior work across
+  sessions; `remember`/`recall`/`forget` are a persistent memory notebook
+  (new `memories` table in `db.py`) whose recent entries are injected into
+  every session's system prompt (`agent_prompt.build_append_system_prompt`).
+  Search/export both explicitly exclude `.mcp.json` / `.claude/settings.local.json`
+  (resolved secrets — see `core.WORKSPACE_SECRET_*`) — covered by
+  `tests/test_search_export_memory.py`'s leak assertions.
+- Session export (`src/ds_agent/export.py`): messages → markdown +
+  a zip of the session's workspace artifacts, capped per-file/total size.
+  Wired into the web UI (chat header "export" button →
+  `GET /v1/sessions/{sid}/export`) and Telegram (`/export`, ~45 MB cap for
+  Telegram's upload limit).
+- Fixed `sessions.get_active()` — `telegram.py`'s `/stop` command called it
+  but it never existed, so `/stop` always crashed with `AttributeError`.
 
 ## Open
 
@@ -100,7 +116,16 @@ Current state as of 2026-08-25, right after the repo restructure
 - [ ] **Quant Artifact Templates**: System prompt guidance for generating interactive Plotly financial charts (candlesticks, drawdown curves, return heatmaps) and tearsheets (`quantstats`).
 
 ### Low / ideas
-- [ ] Session export (transcript → markdown)
+- [x] Session export (transcript → markdown + artifacts zip; web UI + Telegram `/export`)
 - [ ] Multi-session concurrency guard UI (currently second WS just fails)
 - [ ] Rate limiting / audit log for `APP_PUBLIC` mode
 - [ ] Move `tests/*.txt` transcripts under `tests/transcripts/`
+- [ ] `search_sessions()` re-reads and re-parses every session's transcript
+      on every call (no index/cache) — fine at personal-tool scale, would
+      need real indexing (e.g. SQLite FTS5 over a synced messages table) if
+      session count/transcript size grows a lot.
+- [ ] Memories have no per-session/per-project scoping or expiry — everything
+      saved via `remember()` is global and injected into every session
+      forever (capped at the 30 most recent). Consider tags-based filtering
+      of what gets auto-injected, or a max-age/pin mechanism, if the list
+      grows large enough to crowd the system prompt.
