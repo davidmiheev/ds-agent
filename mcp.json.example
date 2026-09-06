@@ -26,18 +26,19 @@
     "memory": {
       "command": "${ROOT}/.venv/bin/python",
       "args": ["-m", "ds_agent.agent_mcp"],
-      "timeout": 30000,
+      "timeout": 90000,
       "env": {
         "PYTHONPATH": "${ROOT}/src"
       }
     },
     "kaggle": {
-      "command": "npx",
-      "args": [
-        "-y", "mcp-remote", "https://www.kaggle.com/mcp",
-        "--header", "Authorization: Bearer ${VAULT:kaggle}"
-      ],
-      "timeout": 60000
+      "command": "${ROOT}/.venv/bin/python",
+      "args": ["-m", "ds_agent.kaggle_mcp"],
+      "timeout": 120000,
+      "env": {
+        "PYTHONPATH": "${ROOT}/src",
+        "KAGGLE_MCP_TOKEN": "${VAULT:kaggle}"
+      }
     }
   }
 }

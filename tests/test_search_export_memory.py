@@ -6,7 +6,7 @@ guards the one thing that must never happen: a session's resolved secrets
 (.mcp.json / .claude/settings.local.json) leaking into a search result or
 an export zip. Run with: PYTHONPATH=src python tests/test_search_export_memory.py
 """
-import os, sys, tempfile, json
+import os, re, sys, tempfile, json
 from pathlib import Path
 
 tmp = tempfile.mkdtemp()
@@ -126,6 +126,21 @@ db.delete_memory(mid1)
 prompt2 = agent_prompt.build_append_system_prompt()
 assert prompt2 == agent_prompt.DEFAULT_APPEND_SYSTEM_PROMPT
 print("agent_prompt falls back to default when no memories: OK")
+
+# Regression guard: Claude Code namespaces every MCP tool as
+# mcp__<server>__<tool>. A prompt describing agent_mcp.py's tools by their
+# bare names (e.g. "search_other_sessions(query)") makes the model call a
+# name that doesn't exist ("No such tool available") even though the real,
+# prefixed tool works fine — see docs/debug_notes.md 2026-09-06. The bare
+# names must never appear on their own; every reference needs the prefix.
+_memory_tools = ["remember", "recall", "forget", "list_sessions",
+                  "search_other_sessions", "get_session_summary"]
+for _tool in _memory_tools:
+    assert f"mcp__memory__{_tool}" in agent_prompt.DEFAULT_APPEND_SYSTEM_PROMPT, \
+        f"prompt is missing the namespaced mcp__memory__{_tool} reference"
+    bare_uses = re.findall(rf"(?<!mcp__memory__){re.escape(_tool)}\(", agent_prompt.DEFAULT_APPEND_SYSTEM_PROMPT)
+    assert not bare_uses, f"prompt calls {_tool}(...) without the mcp__memory__ prefix: {bare_uses}"
+print("agent_prompt memory tool references are correctly mcp__memory__-namespaced: OK")
 
 # --- sessions.get_active (bug fix) ---
 assert sessions.get_active(sid1) is None  # no client spawned in this test
