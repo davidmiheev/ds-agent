@@ -128,4 +128,6 @@ Current state as of 2026-08-25, right after the repo restructure
       saved via `remember()` is global and injected into every session
       forever (capped at the 30 most recent). Consider tags-based filtering
       of what gets auto-injected, or a max-age/pin mechanism, if the list
-      grows large enough to crowd the system prompt.
+      grows large enough to crowd the system prompt. See
+      `docs/memory-graph-plan.md` for a phased plan (typed/superseded nodes
+      first, entity graph + edges later, only once real usage justifies it).

@@ -101,12 +101,27 @@ def get_session_summary(session_id: str, max_chars: int = 6000) -> str:
 
 @server.tool()
 def remember(text: str, tags: str = "") -> str:
-    """Save a fact/preference/decision to persistent cross-session memory —
-    it is shown to you (and every future session) automatically near the top
-    of the system prompt. Use for durable things worth remembering (user
-    preferences, project conventions, standing goals), NOT transient task
-    state. `tags` is an optional comma-separated label to filter later with
-    recall()."""
+    """Save ONE durable fact/preference/decision to persistent cross-session
+    memory. It is shown to you (and every future session) automatically near
+    the top of the system prompt, so be selective — every entry costs prompt
+    space in EVERY future session, forever.
+
+    SAVE (worth carrying into unrelated future sessions):
+    - A stated user preference ("prefers vectorbt over backtesting.py",
+      "wants OpenRouter as default provider", "always wants plots as PNG not SVG").
+    - A standing project convention or constraint ("this repo's DS env is at
+      $DS_PYTHON, never use bare python3").
+    - A standing goal/deadline that spans multiple sessions.
+    Do NOT save: facts specific to one dataset/task that won't recur, anything
+    the user can see for themselves in the current session's own history, or
+    a fact you already have (call recall() with a relevant keyword FIRST — if
+    an equivalent memory exists, skip the write instead of creating a near-duplicate).
+
+    Be proactive: save worth-keeping facts as soon as they come up (e.g. the
+    user states a preference, or you finish a task with a reusable
+    convention) — don't wait to be asked to "remember" something.
+
+    `tags` is an optional comma-separated label to filter later with recall()."""
     text = text.strip()
     if not text:
         return json.dumps({"error": "text is empty"})

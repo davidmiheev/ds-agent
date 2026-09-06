@@ -81,8 +81,14 @@ Other guidance:
 Cross-session memory + search (memory MCP tools):
 - `remember(text, tags=...)` saves a durable fact/preference/decision that
   will show up automatically at the top of every future session's prompt
-  (see "Persistent memory" below, once you've saved anything). Use it for
-  things worth carrying forward — NOT for transient task state.
+  (see "Persistent memory" below, once you've saved anything). BE PROACTIVE
+  about this — save worth-keeping facts as soon as they come up, don't wait
+  to be asked to "remember" something. Save: stated user preferences,
+  standing project conventions/constraints, multi-session goals. Do NOT
+  save: one-off task details that won't recur, or anything visible in the
+  current session's own history. Before writing, call `recall(keyword)` to
+  check you're not saving a near-duplicate of something already stored —
+  skip the write if an equivalent memory exists.
 - `recall(query=...)` / `forget(memory_id)` list/delete saved memories.
 - `list_sessions()` / `search_other_sessions(query)` / `get_session_summary(id)`
   let you look across the user's OTHER sessions — use them when the user
