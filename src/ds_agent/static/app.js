@@ -171,11 +171,18 @@ function chatApp() {
     _connect(id) {
       if (this.ws) try { this.ws.close(); } catch {}
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      this.ws = new WebSocket(`${proto}://${location.host}/ws/sessions/${id}`);
-      this.ws.onopen = () => { this.connected = true; this.busy = false; };
-      this.ws.onclose = () => { this.connected = false; };
-      this.ws.onerror = () => { this.connected = false; };
-      this.ws.onmessage = (ev) => this._onFrame(JSON.parse(ev.data));
+      const sock = new WebSocket(`${proto}://${location.host}/ws/sessions/${id}`);
+      this.ws = sock;
+      // Guard every handler with `this.ws === sock`: closing the old socket
+      // above doesn't fire its onclose synchronously, so switching sessions
+      // fast enough can have the OLD socket's onclose land AFTER the NEW
+      // socket already opened, unconditionally setting connected = false
+      // and permanently disabling send() until a full page reload. Each
+      // handler must only touch shared state if it's still the current socket.
+      sock.onopen = () => { if (this.ws === sock) { this.connected = true; this.busy = false; } };
+      sock.onclose = () => { if (this.ws === sock) this.connected = false; };
+      sock.onerror = () => { if (this.ws === sock) this.connected = false; };
+      sock.onmessage = (ev) => { if (this.ws === sock) this._onFrame(JSON.parse(ev.data)); };
     },
 
     async _loadFiles(id) {
@@ -469,6 +476,16 @@ function chatApp() {
         const el = document.getElementById('messages');
         if (el) el.scrollTop = el.scrollHeight;
       });
+    },
+
+    scrollToTop() {
+      const el = document.getElementById('messages');
+      if (el) el.scrollTop = 0;
+    },
+
+    scrollToBottom() {
+      const el = document.getElementById('messages');
+      if (el) el.scrollTop = el.scrollHeight;
     },
   };
 }
