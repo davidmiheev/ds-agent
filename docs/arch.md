@@ -32,10 +32,11 @@ flowchart TD
     end
 
     subgraph MCPs["MCP Suite (Child Subprocesses & Remote Bridges)"]
-        KaggleMCP["Kaggle MCP (Remote Gateway)\nhttps://www.kaggle.com/mcp\nCompetitions, Datasets, Models"]
+        KaggleMCP["Kaggle Auto-Correcting Proxy (kaggle_mcp.py)\nForwards to https://www.kaggle.com/mcp via mcp-remote\nAuto-fixes save_notebook's Nullable/kernelType footguns"]
         ColabMCP["Google Colab MCP (colab_server.py)\nOAuth Token Cache\nCPU / T4 / L4 / A100 / TPU"]
         DSMCP["Data Science MCP (ds_mcp/server.py)\nds_preview, ds_run, ds_env, ds_install\nDedicated ds-env Python Sandbox"]
         ResearchMCP["Research & Quant MCP (research_mcp/server.py)\narXiv, FRED macro series, PubMed,\nOpenAlex, HuggingFace, UniProt, PDB"]
+        MemoryMCP["Cross-Session Memory MCP (agent_mcp.py)\nremember/recall/forget, search_other_sessions"]
         FSMCP["Filesystem MCP (npx)\nWorkspace Directory File Access"]
     end
 
@@ -59,6 +60,7 @@ flowchart TD
     CLI --> ColabMCP
     CLI --> DSMCP
     CLI --> ResearchMCP
+    CLI --> MemoryMCP
     CLI --> FSMCP
 
     KaggleMCP --> KaggleAPI
@@ -217,6 +219,12 @@ ds-agent/
 │   │   ├── providers.py       # BYOK key → environment variables for subprocess
 │   │   ├── model_catalog.py   # Curated model picker + live OpenRouter catalog sync
 │   │   ├── agent_prompt.py    # Appended system prompt (data science & quant guidance)
+│   │   ├── agent_mcp.py       # Cross-session memory MCP: remember/recall/forget,
+│   │   │                      #   list_sessions/search_other_sessions/get_session_summary
+│   │   ├── kaggle_mcp.py      # Auto-correcting proxy in front of Kaggle's remote MCP —
+│   │   │                      #   fixes save_notebook's Nullable/kernelType footguns
+│   │   ├── search.py          # Cross-session substring search over transcripts + files
+│   │   ├── export.py          # Session → markdown + artifacts zip (web UI + Telegram /export)
 │   │   ├── artifact_parser.py # __ARTIFACT__ marker parser → inline HTML/images/files
 │   │   ├── trim.py            # Tool-result output trimmer (head/tail + pointer file)
 │   │   ├── static/            # app.js, style.css (no build step, CDN libraries)

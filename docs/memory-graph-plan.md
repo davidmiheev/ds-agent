@@ -140,7 +140,9 @@ big-bang rewrite and no downtime.
 - **No semantic retrieval.** Traversal and `recall` still only match on
   literal text/tag/entity-name overlap. A future layer (e.g. `sqlite-vec`
   embeddings) could sit on top of this schema without changing it, but
-  that's a separate, later effort.
+  that's a separate, later effort — see `docs/search-improvements-plan.md`
+  Tier 4/5, which plans this same embedding layer for `search_other_sessions`
+  and would apply equally here.
 - **Complexity vs. actual benefit.** As of this writing the `memories`
   table is empty in production (PR #2 hasn't been deployed yet) — there is
   no real usage data showing the flat list is actually a problem. Building

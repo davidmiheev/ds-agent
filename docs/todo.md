@@ -120,10 +120,13 @@ Current state as of 2026-08-25, right after the repo restructure
 - [ ] Multi-session concurrency guard UI (currently second WS just fails)
 - [ ] Rate limiting / audit log for `APP_PUBLIC` mode
 - [ ] Move `tests/*.txt` transcripts under `tests/transcripts/`
-- [ ] `search_sessions()` re-reads and re-parses every session's transcript
-      on every call (no index/cache) — fine at personal-tool scale, would
-      need real indexing (e.g. SQLite FTS5 over a synced messages table) if
-      session count/transcript size grows a lot.
+- [ ] `search_sessions()` is a plain substring scan that re-reads and
+      re-parses every session's transcript on every call (no tokenization,
+      no ranking, no index/cache) — fine at personal-tool scale today. See
+      `docs/search-improvements-plan.md` for a phased plan (tokenized
+      matching first — reusing `telegram.py`'s `/models` fix — then SQLite
+      FTS5 indexing, then optional fuzzy/semantic search, each gated on
+      real evidence the previous tier isn't enough).
 - [ ] Memories have no per-session/per-project scoping or expiry — everything
       saved via `remember()` is global and injected into every session
       forever (capped at the 30 most recent). Consider tags-based filtering
