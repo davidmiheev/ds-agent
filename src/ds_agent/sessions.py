@@ -12,7 +12,7 @@ from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions
 
 from . import core, db, providers as prov_mod
 from .artifact_parser import rewrite_tool_result_content
-from .agent_prompt import DEFAULT_APPEND_SYSTEM_PROMPT
+from . import agent_prompt
 from .trim import trim_tool_result_blocks
 
 # In-memory registry of active SDK clients, keyed by session_id.
@@ -89,6 +89,11 @@ def get(sid: str) -> dict | None:
     return db.get_session(sid)
 
 
+def get_active(sid: str) -> ActiveSession | None:
+    """The in-memory ActiveSession if one is currently spawned, else None."""
+    return _active.get(sid)
+
+
 def delete(sid: str) -> None:
     if sid in _active:
         try:
@@ -160,7 +165,7 @@ async def _spawn_client(row: dict) -> ClaudeSDKClient:
         permission_mode="bypassPermissions",
         # The 0.2.x SDK uses extra_args to forward CLI flags. --append-system-prompt
         # adds our data-science guidance on top of the default prompt.
-        extra_args={"append-system-prompt": DEFAULT_APPEND_SYSTEM_PROMPT},
+        extra_args={"append-system-prompt": agent_prompt.build_append_system_prompt()},
         # Resume the prior conversation: the SDK needs its own session UUID
         # (from the transcript), not our sid.
         resume=_sdk_session_id(workspace),
@@ -211,7 +216,7 @@ def _sdk_session_id(workspace: Path) -> str | None:
     return tp.stem if tp else None
 
 
-def load_history(sid: str) -> dict:
+def load_history(sid: str, inline_artifacts: bool = True) -> dict:
     """Rebuild the chat history for the UI from the on-disk SDK transcript.
 
     Returns {messages: [...], last_usage: {...} | None} where each message has
@@ -219,6 +224,10 @@ def load_history(sid: str) -> dict:
       {role: "user"|"assistant"|"tool"|"tool-result", content: <raw>}
     Tool-result text is passed through the artifact rewriter so plots/files
     embedded via __ARTIFACT__ markers render again after a page refresh.
+
+    `inline_artifacts=False` skips that rewrite (leaves the raw
+    `__ARTIFACT__:kind:path` markers in the text) — used by search/export,
+    where base64-inlining every plot into memory is wasted work.
     """
     row = db.get_session(sid)
     if not row:
@@ -226,6 +235,10 @@ def load_history(sid: str) -> dict:
     workspace = Path(row["workspace"])
     tp = _latest_transcript(workspace)
     messages: list[dict] = []
+
+    def _maybe_rewrite(text: str) -> str:
+        return rewrite_tool_result_content(text, workspace=workspace) if inline_artifacts else text
+
     if tp:
         for line in tp.read_text().splitlines():
             line = line.strip()
@@ -245,7 +258,7 @@ def load_history(sid: str) -> dict:
                         if isinstance(b, dict) and b.get("type") == "tool_result":
                             inner = b.get("content")
                             if isinstance(inner, str):
-                                inner = rewrite_tool_result_content(inner, workspace=workspace)
+                                inner = _maybe_rewrite(inner)
                             messages.append({"role": "tool-result", "content": inner})
             elif t == "assistant":
                 c = (e.get("message") or {}).get("content")
@@ -255,7 +268,7 @@ def load_history(sid: str) -> dict:
                             continue
                         bt = b.get("type")
                         if bt == "text" and b.get("text", "").strip():
-                            messages.append({"role": "assistant", "content": rewrite_tool_result_content(b["text"], workspace=workspace)})
+                            messages.append({"role": "assistant", "content": _maybe_rewrite(b["text"])})
                         elif bt == "thinking" and b.get("thinking", "").strip():
                             messages.append({"role": "thinking", "content": b["thinking"]})
                         elif bt == "tool_use":

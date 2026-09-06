@@ -42,23 +42,30 @@
         </div>
         <span class="muted small model-badge" x-text="model"></span>
         <button class="ghost" @click="interrupt()" :disabled="!busy">stop</button>
+        <button class="ghost" @click="exportCurrent()" title="download messages + artifacts as a zip">export</button>
         <button class="ghost danger" @click="deleteCurrent()">delete</button>
         <button class="ghost tiny icon-btn mobile-toggle" @click="filesOpen = !filesOpen" title="Toggle Files">📁</button>
       </div>
     </header>
 
-    <section class="messages" id="messages">
-      <template x-for="(m, i) in messages" :key="i">
-        <div :class="['msg', m.role]">
-          <div class="role" x-text="m.role"></div>
-          <div class="body" x-html="m.html"></div>
+    <div class="messages-wrap">
+      <section class="messages" id="messages">
+        <template x-for="(m, i) in messages" :key="i">
+          <div :class="['msg', m.role]">
+            <div class="role" x-text="m.role"></div>
+            <div class="body" x-html="m.html"></div>
+          </div>
+        </template>
+        <div x-show="busy" class="msg assistant thinking">
+          <div class="role">assistant</div>
+          <div class="body"><span class="spinner"></span> working…</div>
         </div>
-      </template>
-      <div x-show="busy" class="msg assistant thinking">
-        <div class="role">assistant</div>
-        <div class="body"><span class="spinner"></span> working…</div>
+      </section>
+      <div class="scroll-nav" x-show="messages.length">
+        <button class="scroll-nav-btn" @click="scrollToTop()" title="jump to top">⬆</button>
+        <button class="scroll-nav-btn" @click="scrollToBottom()" title="jump to bottom">⬇</button>
       </div>
-    </section>
+    </div>
 
     <footer class="composer">
       <div class="composer-main">

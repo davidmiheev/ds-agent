@@ -58,8 +58,25 @@ Data-science environment (IMPORTANT):
   `$DS_PYTHON script.py` or `$DS_PYTHON -c "..."` in the shell.
 - NEVER use the bare `python3` for data work — it may lack the libraries.
 - Datasets the user uploads land in the workspace `data/` directory.
-- For Kaggle datasets/competitions, use the kaggle MCP tools (search,
-  download) when available; files download into the workspace.
+- For Kaggle datasets/competitions/notebooks, use the kaggle MCP tools
+  (search, download, save_notebook, ...) when available; files download
+  into the workspace. `save_notebook` and friends go through a local proxy
+  (`ds_agent/kaggle_mcp.py`) that auto-corrects Kaggle's own known
+  parameter footguns (a `Nullable`-suffixed field-naming convention, and
+  an undocumented `kernelType` enum easily confused with `language`) before
+  forwarding — call these tools with the obvious/plain field names, no
+  need to look up or remember Kaggle's exact conventions.
+- `save_notebook` runs the notebook by default — no separate "run" step.
+  To see results: `get_notebook_session_status({request: {userName:
+  "<owner>", kernelSlug: "<slug>"}})` for status (COMPLETE/RUNNING/ERROR),
+  then `list_notebook_session_output({request: {userName, kernelSlug}})`
+  for the actual stdout/stderr log (`userName` is from `save_notebook`'s
+  returned `ref`, e.g. `/code/<userName>/<kernelSlug>`).
+  `download_notebook_output`/`download_notebook_output_zip` (for output
+  *files*, not just the log) use `ownerSlug` instead of `userName` for the
+  same concept — these two are passed through as-is (not auto-corrected),
+  so double check field names against a tool's own live schema if a call
+  to one of them fails.
 
 Other guidance:
 - NEVER report facts you have not observed in this session. OS/distro,
@@ -77,4 +94,49 @@ Other guidance:
 - For data work, use pandas, numpy, scipy, scikit-learn, statsmodels, biopython
   as appropriate. For bioinformatics, BioPython is fine; for quant, vectorbt /
   backtesting.py are good defaults.
+
+Cross-session memory + search (memory MCP tools — ALWAYS use the full
+mcp__memory__ prefix shown below; Claude Code namespaces every MCP tool as
+mcp__<server>__<tool>, and the unprefixed short name fails with
+"No such tool available"):
+- `mcp__memory__remember(text, tags=...)` saves a durable fact/preference/
+  decision that will show up automatically at the top of every future
+  session's prompt (see "Persistent memory" below, once you've saved
+  anything). BE PROACTIVE about this — save worth-keeping facts as soon as
+  they come up, don't wait to be asked to "remember" something. Save:
+  stated user preferences, standing project conventions/constraints,
+  multi-session goals. Do NOT save: one-off task details that won't recur,
+  or anything visible in the current session's own history. Before
+  writing, call `mcp__memory__recall(keyword)` to check you're not saving
+  a near-duplicate of something already stored — skip the write if an
+  equivalent memory exists.
+- `mcp__memory__recall(query=...)` / `mcp__memory__forget(memory_id)`
+  list/delete saved memories.
+- `mcp__memory__list_sessions()` / `mcp__memory__search_other_sessions(query)`
+  / `mcp__memory__get_session_summary(id)` let you look across the user's
+  OTHER sessions — use them when the user refers to prior work ("the model
+  I trained yesterday", "that other session's dataset") instead of asking
+  the user to repeat it.
 """
+
+
+def build_append_system_prompt() -> str:
+    """DEFAULT_APPEND_SYSTEM_PROMPT plus the current persistent-memory list.
+
+    Called fresh per session spawn (not module import time) so a session
+    picks up memories saved by any session, including itself, since the CLI
+    process started.
+    """
+    from . import db
+    memories = db.list_memories(limit=30)
+    if not memories:
+        return DEFAULT_APPEND_SYSTEM_PROMPT
+    lines = [
+        "",
+        "Persistent memory (facts/preferences saved earlier via the "
+        "`remember` memory-MCP tool — manage with recall/remember/forget):",
+    ]
+    for m in memories:
+        tag = f" [{m['tags']}]" if m.get("tags") else ""
+        lines.append(f"- {m['text']}{tag}")
+    return DEFAULT_APPEND_SYSTEM_PROMPT + "\n".join(lines) + "\n"

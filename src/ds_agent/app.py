@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import core, db, crypto, sessions, telegram, model_catalog
+from . import core, db, crypto, sessions, telegram, model_catalog, export as export_mod
 from .providers import env_for
 
 db.init()
@@ -421,6 +421,21 @@ async def session_compact(sid: str):
         return await sessions.compact_now(active)
     except Exception as e:
         return {"error": str(e)}
+
+
+@app.get("/v1/sessions/{sid}/export")
+async def session_export(sid: str):
+    from fastapi.responses import Response
+    row = sessions.get(sid)
+    if not row:
+        raise HTTPException(404, "no such session")
+    data = await asyncio.to_thread(export_mod.build_zip_bytes, sid)
+    filename = export_mod.export_filename(sid)
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # --------------------------------------------------- files / workspace view --

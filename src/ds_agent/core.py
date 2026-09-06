@@ -48,3 +48,9 @@ TURN_INACTIVITY_TIMEOUT = float(os.environ.get("TURN_INACTIVITY_TIMEOUT", "300")
 # If an interrupt doesn't produce a result frame within this long, the client
 # is force-disconnected and respawned so the session is usable again.
 TURN_RECOVERY_TIMEOUT = float(os.environ.get("TURN_RECOVERY_TIMEOUT", "30"))
+
+# Workspace entries never walked for search/export: .mcp.json and
+# .claude/settings.local.json hold *resolved* provider API keys and BYOK
+# secrets (see sessions._render_session_dir), not just config.
+WORKSPACE_SECRET_DIRS = {".claude", ".git", "__pycache__", "node_modules", ".truncated"}
+WORKSPACE_SECRET_FILES = {".mcp.json"}

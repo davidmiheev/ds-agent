@@ -175,9 +175,15 @@ check filesystem npx -y @modelcontextprotocol/server-filesystem /tmp
 check colab      src/colab_mcp/.venv/bin/python -m colab_mcp.colab_server
 check research   .venv/bin/python -m research_mcp.server
 check ds         .venv/bin/python -m ds_mcp.server
+check memory     .venv/bin/python -m ds_agent.agent_mcp
 '" || echo "  (MCP verification had failures — check output above)"
 
 echo "==> [5/6] Verifying kaggle remote MCP (Bearer token from .env)"
+# This checks the raw upstream connectivity/token directly, independent of
+# ds_agent.kaggle_mcp (the local proxy that mcp.json's "kaggle" entry
+# actually runs — it auto-corrects known-bad Kaggle tool params before
+# forwarding, see docs/debug_notes.md). If this raw check fails, the proxy
+# will too, since it depends on the exact same upstream connection.
 $SSH "su - agent -c '
 export PATH=\$HOME/.local/bin:\$PATH
 TOK=\$(grep ^KAGGLE_API_TOKEN $REMOTE_DIR/.env | cut -d= -f2)

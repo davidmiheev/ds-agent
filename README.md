@@ -14,6 +14,8 @@
 - **Dedicated Data Science Environment & MCP (`ds_mcp`)**: Fast, isolated data science environment (`pandas`, `polars`, `numpy`, `scikit-learn`, `scipy`, `statsmodels`, `seaborn`, `plotly`, `pyarrow`, etc.) with one-call dataset inspection (`ds_preview`) and code execution (`ds_run`).
 - **Quantitative & Macroeconomic Research**: Integrated Federal Reserve Economic Data (FRED) API series query, statistical/econometric modeling (`statsmodels`, `scipy`), financial backtesting guidance (`vectorbt`, `backtesting.py`), and quantitative finance paper search (`q-fin` on arXiv).
 - **Academic & Bio/Quant MCP (`research_mcp`)**: 12 search tools across arXiv, Semantic Scholar, OpenAlex, PubMed, bioRxiv, Hugging Face (models & datasets), UniProt, PDB, Ensembl, and FRED economic time-series.
+- **Cross-Session Memory & Search (`agent_mcp`)**: the agent can search every other session's messages and workspace files for prior work, pull in a summary, and save durable facts/preferences to a persistent memory shown at the top of every future session's prompt.
+- **Session Export**: download any session's messages + artifacts as a zip — a button in the web UI's chat header, or `/export` in Telegram.
 - **Inline Artifact Rendering**: Matplotlib figures, Seaborn charts, and Plotly visualizations render inline immediately. CSVs, Parquet files, JSON data, and Markdown reports surface as one-click downloads.
 - **Token Economy & Prompt Caching**: Real-time cost calculation, cache hit tracking (`cache_read_tokens`), automated context compaction, and output trimming.
 - **Zero-Build Web UI**: Clean, responsive interface featuring streaming chat, live tool inspection, an embedded xterm.js terminal, dataset uploader (up to 2 GB), and workspace file browser.
@@ -118,7 +120,25 @@ A unified search server with 12 tools for literature and biological/economic dat
 - **Machine Learning & Data**: `hf_search_models`, `hf_search_datasets`.
 - **Bioinformatics**: `uniprot_search`, `pdb_search`, `ensembl_search`.
 
-### 5. Telegram Bot Integration
+### 5. Cross-Session Memory & Search MCP (`agent_mcp`)
+Gives the agent itself — not just the human user — visibility across every
+session, so it can reuse prior work instead of redoing it, plus a small
+persistent notebook that survives across sessions:
+
+| Tool | Action |
+|------|--------|
+| `list_sessions` | List every session (id, title, provider/model, last active). |
+| `search_other_sessions` | Substring search over every *other* session's messages and workspace filenames (plots, csvs, notebooks, ...) — e.g. when the user says "the model I trained yesterday". |
+| `get_session_summary` | Pull another session's messages as plain text (by id or prefix) for full context after locating it. |
+| `remember` | Save a durable fact/preference/decision (`tags` optional) — shown automatically near the top of every future session's system prompt. |
+| `recall` / `forget` | List (optionally filtered) or delete saved memories. |
+
+Backed by the same `state.db` SQLite file as the web UI/Telegram bot — no
+separate index to keep in sync. `.mcp.json` / `.claude/settings.local.json`
+(which hold resolved provider API keys per session) are never searched or
+surfaced by these tools.
+
+### 6. Telegram Bot Integration
 Interact directly with the agent from Telegram on mobile or desktop. It runs
 as a background long-polling worker (`src/ds_agent/telegram.py`) alongside
 the FastAPI server whenever a bot token is configured — no separate process
@@ -147,6 +167,7 @@ or public webhook needed.
 | `/compact` | Compact the active session's context |
 | `/stop` | Interrupt the agent mid-turn |
 | `/status` | Show the active session's ID, title, model, provider, and workspace path |
+| `/export` | Zip the active session's messages + artifacts and send it as a Telegram document (skips the send with a message if the zip is over ~45 MB — download it from the web UI instead) |
 
 **Behavior**:
 - Each Telegram chat maps to one ds-agent session at a time (`/new` creates one automatically on first message if none exists), with a per-chat lock so turns don't overlap.
@@ -344,7 +365,7 @@ uv run python tests/test_ds2.py "$SID"
 
 ## 🚀 One-Command Remote Deployment
 
-Deploy a fully working agent (app + all 5 MCP servers + systemd service) to any
+Deploy a fully working agent (app + all 6 MCP servers + systemd service) to any
 Ubuntu/Debian VPS with a single command:
 
 ```bash
