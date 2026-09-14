@@ -65,6 +65,18 @@ Current state as of 2026-08-25, right after the repo restructure
   Telegram's upload limit).
 - Fixed `sessions.get_active()` — `telegram.py`'s `/stop` command called it
   but it never existed, so `/stop` always crashed with `AttributeError`.
+- Vast.ai MCP Phase 1 (`src/vast_mcp/server.py`, 7th MCP server): a second,
+  SSH-free compute backend alongside Colab — real GPU marketplace pricing,
+  full root Docker access, single Bearer API key (no OAuth). Grounded by
+  reading the real `vastai` PyPI package source directly rather than
+  depending on it (it pins `cryptography==49.0.0`, conflicting with this
+  project's own `cryptography>=50.0.0`) — re-implemented the ~8 needed
+  endpoints with stdlib `urllib` instead (zero new dependency, same
+  approach `telegram.py`'s `TelegramAPI` already uses). Cost-safety is
+  built into `vast_status`/`vast_new`/`vast_stop`/`vast_destroy` from the
+  start (a running instance bills immediately with no idle timeout by
+  default). See `docs/vast-mcp-plan.md` for the full design and Phases 2-3
+  (SSH/SCP for large files, idle watchdog) still open, gated on real usage.
 
 ## Open
 
