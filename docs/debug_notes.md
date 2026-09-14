@@ -870,6 +870,119 @@ on a *different* model, the mitigations above (watchdog + shared engine +
 Telegram fallback message) are what carry the failure gracefully; they were
 never a fix for the CLI's model list, just damage control.
 
+## colab_mcp: PKCE verifier discarded, no reconnect on token expiry, upload/exec path mismatch (2026-09-14)
+
+Three bugs found by reading `colab_server.py` against the real
+`google-colab-cli` source (`src/colab_cli/{client,auth,contents,runtime}.py`,
+cloned for reference — it's `pip install -e`'d from GitHub, not on PyPI).
+
+**1. PKCE verifier discarded in `_complete_oauth`.** `_start_oauth()` built
+an `InstalledAppFlow` and called `authorization_url()` on it — which
+auto-generates `flow.code_verifier` and embeds a `code_challenge` derived
+from it in the returned URL (confirmed by reading
+`google_auth_oauthlib.flow.Flow.authorization_url`'s source directly: it
+sets `code_verifier` then does `sha256(code_verifier)` -> `code_challenge`).
+But only the raw `client_config` dict was persisted (`_state["_auth_client_config"]`),
+not the `flow` object itself. `_complete_oauth(code)` then built a **second,
+brand-new** `Flow` from that config and called `fetch_token(code=code)` on
+*it* — `Flow.fetch_token` defaults `code_verifier=self.code_verifier`, and
+since this second flow never called `authorization_url()`, its
+`code_verifier` was still `None`. Google's token endpoint requires the
+`code_verifier` to match the `code_challenge` already sent during
+authorization, so this exchange could never succeed — confirmed the
+`README.md` Colab section already documented a workaround (`auth_once.py`'s
+single-process interactive flow, which never round-trips through two
+separate MCP tool calls) specifically because of this.
+
+**Fix**: persist the actual `flow` object from `_start_oauth()` in
+`_state["_auth_flow"]` and reuse that exact instance in `_complete_oauth()`.
+`colab_auth(code=...)` with no prior `colab_auth()` call (or after a server
+restart) now raises a clear error instead of silently building a
+PKCE-broken flow.
+
+**2. No reconnect path when the runtime proxy token expires.** The
+websocket token used to authenticate the kernel connection
+(`extra_params={"colab-runtime-proxy-token": self.token}` in
+`ColabRuntime.kernel_client`) is short-lived — `RuntimeProxyInfo.token_expires_in_seconds`
+(observed: exactly 3600s), independent of how long the underlying runtime
+itself stays up. `colab_new` fetched this token once and cached a
+`ColabRuntime` with it baked in; nothing in `colab_server.py` ever
+refreshed it, so any agent session running longer than an hour (completely
+normal for a training job) would start failing kernel auth with no
+recovery path other than discarding the whole session — which, if done
+naively by pruning the local `SessionState`, would also orphan the
+still-running, still-billing remote runtime (the local record disappearing
+doesn't stop the VM).
+
+Root cause of *why* there was no reconnect path: `client.assign()`
+(`Client.assign` -> `_get_assignment` -> either returns the already-live
+`Assignment` with a **freshly issued token** if one exists, or POSTs a new
+one) is itself idempotent-reconnect-capable — but `colab_new` called it
+with a throwaway `uuid.uuid4()` every time and never persisted that
+`notebook_hash`, so there was no way to call `assign()` again for "the same
+runtime" later. (Note: even the official CLI's own `new`/`restart-kernel`
+commands don't persist `notebook_hash` either — this repo's Colab
+integration is a long-lived MCP *process* caching one runtime for
+potentially hours, which the official one-shot CLI commands never do, so
+this gap only bites us, not upstream.)
+
+**Fix**: persist `notebook_hash` (+ `variant`/`accelerator`/`shape`) in
+`_state` when `colab_new` runs; before every `colab_execute`/`colab_upload`
+call, `_refresh_runtime_token_if_needed()` checks the cached token's
+deadline (60s safety margin) and, if stale, calls `client.assign()` again
+with the SAME `notebook_hash` — updating the `SessionState`'s token/url in
+place and clearing the cached `ColabRuntime` so `_active_runtime()` rebuilds
+with the fresh token, while keeping `kernel_id`/`session_id` so it
+reconnects to the same running kernel. Explicitly never prunes/removes the
+session on a stale token — that's the exact mistake this fix exists to
+avoid.
+
+**3. upload -> exec path mismatch.** `colab_server.py` had no upload tool
+at all, and `colab_execute` never chdir'd the kernel to `/content` before
+running code. The official CLI's `exec`/`repl` commands *always* do
+`os.chdir('/content')` first, specifically because the Colab Contents API
+(`ContentsClient`, used for `upload`/`download`/`ls`) is always rooted at
+`/content` regardless of whatever the kernel process's actual cwd happens
+to be — confirmed by reading `contents.py` (`PUT {base_url}/api/contents/{remote_path}`,
+no cwd involvement at all) side-by-side with `execution.py`'s
+`exec_command`, which reads `-f <file>` from the **local** filesystem (it's
+source code to inline and run remotely, not a remote path — a second,
+unrelated meaning of "path" in the same command) and always chdirs before
+executing. Two different filesystem namespaces (contents-API-rooted vs.
+kernel-cwd) sharing the same-looking path strings, with nothing in our
+wrapper keeping them in sync, is the "mismatch": a file uploaded to
+contents-path `foo.csv` (-> `/content/foo.csv` on disk) could silently not
+be found by `open('foo.csv')` in `colab_execute`'d code if the kernel's cwd
+wasn't `/content`.
+
+**Fix**: `_active_runtime()` now issues the same `os.chdir('/content')`
+prelude once per freshly-built `ColabRuntime` (not every call — we cache
+and reuse the runtime across many `colab_execute` calls, unlike the
+official CLI's one-shot-per-invocation model). Added a real `colab_upload`
+tool (previously entirely missing) wrapping `ContentsClient.upload()`,
+always resolving `remote_path` relative to `/content` (a leading `/` is
+stripped rather than treated as "somewhere else"), so both halves of "where
+did my file go" now agree by construction.
+
+**Verification**: no real Google credentials available in this sandbox, so
+verified logic-level: built the colab_mcp venv (`bash src/colab_mcp/setup.sh`,
+cloning the real `google-colab-cli` source for reference) and wrote
+`tests/test_colab_mcp_reconnect.py` — mocks `InstalledAppFlow` to assert
+`_complete_oauth` reuses the exact same `Flow` instance (not a second one)
+and that a missing flow raises instead of silently re-flowing; mocks
+`Client.assign` to assert a fresh token short-circuits (no call at all)
+while an expired one calls `assign()` with the identical `notebook_hash`
+and never touches `StateStore.remove`; mocks `ColabRuntime` to assert the
+chdir prelude fires exactly once per fresh runtime and not on a cached one;
+exercises the real `colab_upload` MCP tool end-to-end (through
+`call_tool()`, with a real temp file) to check remote-path defaulting,
+leading-slash stripping, and the missing-file error path. Also re-ran the
+pre-existing `tests/test_colab_mcp_server.py` stdio smoke test — still
+passes, now shows 8 tools (`colab_upload` added) and a `colab_auth` URL
+with `code_challenge`/`code_challenge_method=S256` visibly present,
+confirming PKCE is genuinely engaged (not just theoretically, per the
+`authorization_url()` source read above).
+
 ## Git / network
 
 - **SSH to GitHub fails over IPv6** on this box: `git push` dies with

@@ -79,12 +79,13 @@ Powered by `src/colab_mcp/colab_server.py` wrapping `google-colab-cli`, enabling
 | `colab_new` | Spin up a fresh runtime (`CPU`, `T4`, `L4`, `A100`, `TPU`). |
 | `colab_status` | Query active compute session state and resource usage. |
 | `colab_execute` | Execute Python code remotely; returns stdout and image outputs. |
+| `colab_upload` | Upload a local file onto the runtime's `/content` dir for `colab_execute` code to open. |
 | `colab_install` | Install packages via pip on the remote Colab instance. |
 | `colab_sessions` | List all active runtime instances associated with the account. |
 | `colab_stop` | Terminate and release the remote runtime. |
 
 **Auth Flow**:
-Google Colab uses PKCE OAuth (`code_verifier`). To avoid PKCE state mismatches or IP mismatch across remote redirects, the recommended flow is:
+Google Colab uses PKCE OAuth (`code_verifier`). `colab_auth`'s own two-step flow (call it with no arguments to get a URL, then again with `code=...`) now correctly reuses the same PKCE verifier across both calls — a bug that used to make that path always fail with `invalid_grant` regardless of the code being valid, which is why the flow below existed as the workaround. It still remains the recommended default for first-time setup (no back-and-forth through the agent chat needed); use the two-step `colab_auth` flow instead when you don't have local shell access (e.g. a pure remote/cloud session):
 
 1. **Authorize locally once** (on your development machine):
    ```bash
