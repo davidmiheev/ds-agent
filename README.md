@@ -11,6 +11,7 @@
 ### Key Capabilities
 - **Official Kaggle MCP**: Search, query, and download datasets, competition data, models, and benchmarks directly via Kaggle's official remote MCP gateway.
 - **Programmatic Google Colab MCP**: Provision cloud runtimes (CPU, T4, L4, A100, TPU), execute heavy training/inference scripts, install remote dependencies, and capture plots—no browser automation needed.
+- **Vast.ai MCP**: A second, SSH-free compute backend — real marketplace GPU pricing/choice and full root Docker access via a single API key (no OAuth).
 - **Dedicated Data Science Environment & MCP (`ds_mcp`)**: Fast, isolated data science environment (`pandas`, `polars`, `numpy`, `scikit-learn`, `scipy`, `statsmodels`, `seaborn`, `plotly`, `pyarrow`, etc.) with one-call dataset inspection (`ds_preview`) and code execution (`ds_run`).
 - **Quantitative & Macroeconomic Research**: Integrated Federal Reserve Economic Data (FRED) API series query, statistical/econometric modeling (`statsmodels`, `scipy`), financial backtesting guidance (`vectorbt`, `backtesting.py`), and quantitative finance paper search (`q-fin` on arXiv).
 - **Academic & Bio/Quant MCP (`research_mcp`)**: 12 search tools across arXiv, Semantic Scholar, OpenAlex, PubMed, bioRxiv, Hugging Face (models & datasets), UniProt, PDB, Ensembl, and FRED economic time-series.
@@ -103,7 +104,26 @@ Google Colab uses PKCE OAuth (`code_verifier`). To avoid PKCE state mismatches o
    ```
    The token auto-refreshes indefinitely.
 
-### 3. Dedicated Data Science Environment & MCP (`ds_mcp`)
+### 3. Vast.ai MCP (SSH-Free GPU Rental, `vast_mcp`)
+A second compute backend alongside Colab (`src/vast_mcp/server.py`), for when you want real marketplace pricing/GPU choice and full root Docker access instead of one fixed accelerator tier. No OAuth — a single API key, same BYOK pattern as Kaggle. Talks to the Vast.ai REST API directly (stdlib `urllib`, no extra dependency, no dedicated venv) rather than the `vastai` PyPI package, which pins a `cryptography` version that conflicts with this project's own — see `docs/vast-mcp-plan.md` for the full design rationale.
+
+| Tool | Action |
+|------|--------|
+| `vast_search_offers` | Query the GPU marketplace (price, GPU, reliability, region). |
+| `vast_new` | Rent a specific offer; polls until running or a terminal failure. |
+| `vast_status` | Show one instance's status, price, and estimated cost-so-far. |
+| `vast_sessions` | List all account instances. |
+| `vast_execute` | Run a shell command (synchronous, ~20s budget — not for long jobs; see below). |
+| `vast_upload` | Push a small local file onto the instance (base64, no SSH). |
+| `vast_install` | `pip install` on the instance. |
+| `vast_stop` | Halt GPU billing, keep storage (resumable). |
+| `vast_destroy` | Permanently terminate — stops ALL billing. |
+
+**Setup**: get a key at [console.vast.ai/manage-keys](https://console.vast.ai/manage-keys/) and store it in the web UI (**Settings → BYOK keys → provider `vast`**) — injected via `${VAULT:vast}`, same as Kaggle.
+
+**Cost safety**: unlike Colab, a `running` instance bills immediately with **no idle timeout by default** — always `vast_destroy` when done (`vast_stop` alone still bills for storage). `vast_execute`'s short budget means long jobs need the detached pattern: `vast_execute("nohup python train.py > /workspace/train.log 2>&1 &")` then poll with `vast_execute("tail -100 /workspace/train.log")`.
+
+### 4. Dedicated Data Science Environment & MCP (`ds_mcp`)
 Isolates analytical workloads in a dedicated Python environment located at `~/.coding-agent/ds-env/` (pre-populated with top scientific computing libraries):
 
 | Tool | Action |
@@ -113,14 +133,14 @@ Isolates analytical workloads in a dedicated Python environment located at `~/.c
 | `ds_env` | Returns the Python interpreter path and installed library versions. |
 | `ds_install` | Installs additional libraries (`xgboost`, `lightgbm`, `torch`, `vectorbt`, `yfinance`, etc.) into the DS environment. |
 
-### 4. Academic & Bio/Quant Research MCP (`research_mcp`)
+### 5. Academic & Bio/Quant Research MCP (`research_mcp`)
 A unified search server with 12 tools for literature and biological/economic data:
 - **Macroeconomics & Quantitative Data**: `fred_series` (Federal Reserve Economic Data for interest rates, inflation, GDP, yield curves, monetary indicators).
 - **Literature**: `arxiv_search` (supporting CS, stats, `q-bio`, and `q-fin`), `semantic_scholar_search`, `openalex_search`, `pubmed_search`, `biorxiv_search`, `crossref_lookup`.
 - **Machine Learning & Data**: `hf_search_models`, `hf_search_datasets`.
 - **Bioinformatics**: `uniprot_search`, `pdb_search`, `ensembl_search`.
 
-### 5. Cross-Session Memory & Search MCP (`agent_mcp`)
+### 6. Cross-Session Memory & Search MCP (`agent_mcp`)
 Gives the agent itself — not just the human user — visibility across every
 session, so it can reuse prior work instead of redoing it, plus a small
 persistent notebook that survives across sessions:
@@ -138,7 +158,7 @@ separate index to keep in sync. `.mcp.json` / `.claude/settings.local.json`
 (which hold resolved provider API keys per session) are never searched or
 surfaced by these tools.
 
-### 6. Telegram Bot Integration
+### 7. Telegram Bot Integration
 Interact directly with the agent from Telegram on mobile or desktop. It runs
 as a background long-polling worker (`src/ds_agent/telegram.py`) alongside
 the FastAPI server whenever a bot token is configured — no separate process
@@ -365,7 +385,7 @@ uv run python tests/test_ds2.py "$SID"
 
 ## 🚀 One-Command Remote Deployment
 
-Deploy a fully working agent (app + all 6 MCP servers + systemd service) to any
+Deploy a fully working agent (app + all 7 MCP servers + systemd service) to any
 Ubuntu/Debian VPS with a single command:
 
 ```bash
