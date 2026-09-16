@@ -49,6 +49,20 @@ Current state as of 2026-08-25, right after the repo restructure
   unchanged. (colab_mcp stays on 1.x in its own venv, pinned `mcp[cli]<2`.)
 - Colab one-time OAuth helper: `src/colab_mcp/auth_once.py` (standalone, reuses
   colab-cli's public OAuth client); token at `~/.config/colab-cli/token.json`.
+- Fixed three real `colab_server.py` bugs found by reading the actual
+  `google-colab-cli` source: (1) the two-step `colab_auth`/`colab_auth(code=...)`
+  MCP flow discarded its PKCE `code_verifier` between calls and could never
+  succeed (`_complete_oauth` now reuses the same `Flow` object `_start_oauth`
+  built); (2) no reconnect path when the runtime proxy token expires
+  (~3600s, independent of the runtime's actual lifetime) — `colab_execute`/
+  `colab_upload` now refresh it via `client.assign()` with the original
+  `notebook_hash` before every call, without ever pruning a still-live
+  runtime's session record; (3) `colab_execute` never chdir'd the kernel to
+  `/content` (unlike the official CLI), so a file placed via the Contents
+  API could silently not be found by relative-path `open()` calls — added
+  the missing chdir plus a real `colab_upload` tool (previously entirely
+  missing). See `docs/debug_notes.md` 2026-09-14 and
+  `tests/test_colab_mcp_reconnect.py`.
 - Cross-session memory & search MCP (`src/ds_agent/agent_mcp.py`, 6th MCP
   server, wired into `mcp.json`): `list_sessions`, `search_other_sessions`,
   `get_session_summary` let the agent find and reuse prior work across
@@ -69,6 +83,17 @@ Current state as of 2026-08-25, right after the repo restructure
 ## Open
 
 ### High priority
+- [ ] **Vast.ai MCP (second compute backend, alongside Colab)**: no OAuth
+      (static Bearer API key — fits the existing BYOK vault pattern),
+      real marketplace pricing/GPU choice instead of one fixed tier, full
+      root Docker access. Grounded by reading the real `vastai` SDK source
+      directly (don't depend on the PyPI package itself — it pins
+      `cryptography==49.0.0`, which conflicts with this project's own
+      `cryptography>=50.0.0`; re-implement the ~8 endpoints needed with
+      plain `requests` instead, no dedicated venv needed unlike
+      `colab_mcp`). See `docs/vast-mcp-plan.md` for the full design
+      (tool surface, cost-safety requirements — a `running` instance bills
+      immediately with no idle timeout by default — and phasing).
 - [ ] **Models the bundled CLI doesn't recognize hang instead of failing
       fast** (`/new <model>` in Telegram, or a raw id typed in the web
       picker) — e.g. `google/gemma-4-31b-it`, a real, current OpenRouter

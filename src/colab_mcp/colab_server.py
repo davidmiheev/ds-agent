@@ -4,6 +4,7 @@ Exposes a small set of MCP tools to the agent (claude code etc.):
 
     colab_new        — provision a runtime (CPU / T4 / L4 / A100 / TPU)
     colab_execute    — run code, get stdout/stderr/images back as MCP content
+    colab_upload     — upload a local file onto the runtime's /content dir
     colab_status     — show runtime info
     colab_stop       — release the runtime
     colab_sessions   — list active runtimes
@@ -23,6 +24,7 @@ import json
 import logging
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -57,6 +59,12 @@ os.makedirs(os.path.dirname(TOKEN_CONFIG_PATH), exist_ok=True)
 LOG = logging.getLogger("colab-mcp")
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 
+# Runtime proxy tokens (the "colab-runtime-proxy-token" used to authenticate
+# the kernel websocket) are short-lived — observed to expire at exactly
+# 3600s, independent of how long the underlying runtime itself stays up.
+# Refresh a bit before the deadline so an execute call never races expiry.
+_TOKEN_REFRESH_MARGIN_S = 60
+
 # Per-MCP-process state. We could share a StateStore with the CLI but
 # process isolation keeps things simple.
 _state = {
@@ -66,6 +74,12 @@ _state = {
     "active_session": None,  # SessionState
     "runtime": None,          # ColabRuntime
     "pending_auth_url": None,
+    "_auth_flow": None,          # the in-flight OAuth Flow (holds the PKCE code_verifier)
+    "notebook_hash": None,       # uuid.UUID used for the active session's assign() calls
+    "runtime_token_expires_at": None,  # time.time() deadline for the cached proxy token
+    "variant": None,             # Variant enum for the active session (for token refresh)
+    "accelerator": None,         # Accelerator enum for the active session
+    "shape": None,               # Shape enum for the active session
 }
 
 # ---------------- helpers ----------------
@@ -127,10 +141,49 @@ def _active_session() -> Optional[SessionState]:
     # Pick the most recently used
     return list(sessions.values())[-1]
 
+def _refresh_runtime_token_if_needed() -> None:
+    """Re-issue the runtime proxy token if it's expired or about to be.
+
+    The proxy token is short-lived (see `_TOKEN_REFRESH_MARGIN_S`) and
+    unrelated to the runtime's actual lifetime — any agent session running
+    longer than ~an hour will outlive it. `client.assign()` called again
+    with the SAME notebook_hash returns the existing, still-live assignment
+    with a freshly issued token (not a new billable runtime) as long as the
+    runtime is still up server-side, so this is a reconnect, not a
+    recreate. Deliberately does NOT prune/remove the session on an expired
+    token — an expired *token* does not mean a dead *runtime*, and treating
+    it that way would orphan a live, still-billing runtime instead of just
+    reconnecting to it.
+    """
+    s = _state["active_session"]
+    if s is None:
+        return
+    expires_at = _state.get("runtime_token_expires_at")
+    if expires_at is not None and time.time() < expires_at - _TOKEN_REFRESH_MARGIN_S:
+        return  # still fresh
+    notebook_hash = _state.get("notebook_hash") or uuid.uuid4()
+    res = _get_client().assign(
+        notebook_hash,
+        variant=_state.get("variant"),
+        accelerator=_state.get("accelerator"),
+        shape=_state.get("shape"),
+    )
+    s.token = res.runtime_proxy_info.token
+    s.url = res.runtime_proxy_info.url
+    _state["store"].add(s)
+    _state["notebook_hash"] = notebook_hash
+    _state["runtime_token_expires_at"] = time.time() + res.runtime_proxy_info.token_expires_in_seconds
+    # Force a rebuild with the fresh token below — but keep kernel_id/
+    # session_id on `s` so _active_runtime() reconnects to the SAME running
+    # kernel instead of starting a new one.
+    _state["runtime"] = None
+
+
 def _active_runtime() -> ColabRuntime:
     s = _state["active_session"]
     if s is None:
         raise RuntimeError("No active session. Call `colab_new` first.")
+    _refresh_runtime_token_if_needed()
     if _state["runtime"] is None:
         def on_kid(kid):
             s.kernel_id = kid
@@ -142,6 +195,15 @@ def _active_runtime() -> ColabRuntime:
             s.url, s.token,
             kernel_id=s.kernel_id, session_id=s.session_id,
             on_kernel_started=on_kid, on_session_started=on_sid,
+        )
+        # The Colab Contents API (used by colab_upload) is always rooted at
+        # /content regardless of the kernel's actual cwd — without this, a
+        # file uploaded to contents-path "foo.csv" can silently fail to
+        # `open()` from colab_execute'd code if the kernel's cwd isn't
+        # /content. The official CLI does this same chdir before every
+        # exec/repl; here it only needs to happen once per fresh kernel.
+        _state["runtime"].execute_code(
+            "import os; os.makedirs('/content', exist_ok=True); os.chdir('/content')"
         )
     return _state["runtime"]
 
@@ -207,6 +269,28 @@ async def list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
+            name="colab_upload",
+            description=(
+                "Upload a local file to the active Colab runtime so "
+                "`colab_execute` code can open it. Always lands under "
+                "/content/ on the runtime (the runtime's kernel cwd is "
+                "chdir'd to /content) — pass a bare filename or relative "
+                "sub-path for `remote_path`, and reference that exact same "
+                "relative path with open(...) from colab_execute code."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "local_path": {"type": "string", "description": "Path to the local file to upload"},
+                    "remote_path": {
+                        "type": "string",
+                        "description": "Destination path on the runtime, relative to /content (defaults to the local file's basename)",
+                    },
+                },
+                "required": ["local_path"],
+            },
+        ),
+        types.Tool(
             name="colab_stop",
             description="Release the active Colab runtime.",
             inputSchema={"type": "object", "properties": {}},
@@ -238,7 +322,7 @@ async def list_tools() -> list[types.Tool]:
 
 def _start_oauth() -> str:
     """Build the OAuth URL without consuming input. Returns the URL."""
-    from colab_cli.auth import _run_remote_flow, PUBLIC_SCOPES
+    from colab_cli.auth import PUBLIC_SCOPES
     from importlib import resources
     config_resource = resources.files("colab_cli").joinpath("oauth_config.json")
     client_config = json.loads(config_resource.read_text())
@@ -248,19 +332,30 @@ def _start_oauth() -> str:
     from google_auth_oauthlib.flow import InstalledAppFlow
     flow = InstalledAppFlow.from_client_config(client_config, PUBLIC_SCOPES)
     flow.redirect_uri = "https://sdk.cloud.google.com/applicationdefaultauthcode.html"
+    # authorization_url() auto-generates flow.code_verifier and embeds a
+    # code_challenge (PKCE) derived from it into the returned URL.
     auth_url, _ = flow.authorization_url(prompt="consent", token_usage="remote")
     _state["pending_auth_url"] = auth_url
-    # also save the client config & scopes so colab_auth(code=...) can complete
-    _state["_auth_client_config"] = client_config
+    # Persist the SAME Flow object — not just the client config — so
+    # _complete_oauth() reuses its code_verifier. A fresh Flow built from
+    # the config alone would autogenerate a *different* random verifier
+    # that fetch_token() would send instead, which Google's token endpoint
+    # rejects (invalid_grant) since it no longer matches the code_challenge
+    # already sent above. See docs/debug_notes.md.
+    _state["_auth_flow"] = flow
     return auth_url
 
 
 def _complete_oauth(code: str) -> dict:
-    from google_auth_oauthlib.flow import InstalledAppFlow
-    flow = InstalledAppFlow.from_client_config(
-        _state["_auth_client_config"], PUBLIC_SCOPES
-    )
-    flow.redirect_uri = "https://sdk.cloud.google.com/applicationdefaultauthcode.html"
+    flow = _state.get("_auth_flow")
+    if flow is None:
+        raise RuntimeError(
+            "No pending OAuth flow (or the server restarted since it was "
+            "started). Call colab_auth with no arguments to get a fresh "
+            "authorization URL, then retry colab_auth(code=...)."
+        )
+    # Reuse the exact Flow instance from _start_oauth() so its PKCE
+    # code_verifier matches the code_challenge already sent to Google.
     flow.fetch_token(code=code)
     creds = flow.credentials
     # persist (matches the official CLI)
@@ -270,6 +365,7 @@ def _complete_oauth(code: str) -> dict:
     from google.auth.transport.requests import AuthorizedSession
     _state["client"] = Client(Prod(), AuthorizedSession(creds))
     _state["pending_auth_url"] = None
+    _state["_auth_flow"] = None
     return {"status": "authenticated"}
 
 
@@ -318,7 +414,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
 
             from colab_cli.client import resolve_assign_shape
             shape = resolve_assign_shape(accel, high_mem=high_mem)
-            res = client.assign(uuid.uuid4(), variant=variant, accelerator=accel, shape=shape)
+            notebook_hash = uuid.uuid4()
+            res = client.assign(notebook_hash, variant=variant, accelerator=accel, shape=shape)
             token = res.runtime_proxy_info.token
             url = res.runtime_proxy_info.url
             endpoint = res.endpoint
@@ -330,6 +427,14 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
             _state["store"].add(s)
             _state["active_session"] = s
             _state["runtime"] = None  # lazy init
+            # Remembered so a later expired-token refresh can call assign()
+            # again and reconnect to this SAME runtime instead of either
+            # failing outright or accidentally provisioning a new one.
+            _state["notebook_hash"] = notebook_hash
+            _state["variant"] = variant
+            _state["accelerator"] = accel
+            _state["shape"] = shape
+            _state["runtime_token_expires_at"] = time.time() + res.runtime_proxy_info.token_expires_in_seconds
             return [types.TextContent(
                 type="text",
                 text=json.dumps({
@@ -399,6 +504,27 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                 blocks.append(types.TextContent(type="text", text="(no output)"))
             return blocks
 
+        if name == "colab_upload":
+            from colab_cli.contents import ContentsClient
+            local_path = arguments["local_path"]
+            if not os.path.isfile(local_path):
+                return [types.TextContent(type="text", text=json.dumps(
+                    {"error": f"local file not found: {local_path}"}
+                ))]
+            remote_path = (arguments.get("remote_path") or os.path.basename(local_path)).lstrip("/")
+            # Ensures a session/runtime exists, the proxy token is fresh, and
+            # the kernel's cwd is /content — the same namespace the Contents
+            # API (used below) is always rooted at, so this upload's target
+            # and a later open(remote_path) in colab_execute code agree.
+            _active_runtime()
+            contents = ContentsClient(_state["active_session"])
+            contents.upload(local_path, remote_path)
+            return [types.TextContent(type="text", text=json.dumps({
+                "status": "uploaded",
+                "remote_path": remote_path,
+                "note": f"In colab_execute code: open({remote_path!r}) — runtime cwd is /content.",
+            }))]
+
         if name == "colab_install":
             pkgs = arguments["packages"]
             pkgs_src = " ".join(pkgs)
@@ -428,6 +554,11 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                 return [types.TextContent(type="text", text=f"Error stopping: {e}")]
             _state["active_session"] = None
             _state["runtime"] = None
+            _state["notebook_hash"] = None
+            _state["variant"] = None
+            _state["accelerator"] = None
+            _state["shape"] = None
+            _state["runtime_token_expires_at"] = None
             return [types.TextContent(type="text", text=json.dumps({
                 "status": "stopped", "session": s.name
             }))]
