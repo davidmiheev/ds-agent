@@ -1035,6 +1035,15 @@ user out (next server start: `missing fields client_secret, client_id,
 refresh_token`). The test now points `cs.TOKEN_CONFIG_PATH` at a temp file and
 asserts the real file is byte-identical afterwards.
 
+### 4. A pending `colab_auth` login did not survive a server restart
+The PKCE verifier lived only in `_state["_auth_flow"]`. The claude CLI restarted
+the colab MCP server between `colab_auth()` and `colab_auth(code=...)` — the
+user's first real code failed with "No pending OAuth flow" and they had to sign
+in again. The verifier is now also written to
+`~/.config/colab-cli/pending_auth.json` (0600, discarded after 15 min since
+Google codes expire in ~10) and `_complete_oauth` rebuilds the flow from it when
+the in-memory one is gone. The file is removed on success.
+
 ### Why the 2026-09-14 debugging pass missed these
 - **Mocks encoded the hypothesis.** "No real Google credentials available … so
   verified at the logic level": `_FakeContentsClient.upload` recorded whatever

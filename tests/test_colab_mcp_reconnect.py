@@ -17,6 +17,8 @@ Uses fakes/mocks throughout — no real Google OAuth or Colab runtime needed.
 Run with: src/colab_mcp/.venv/bin/python tests/test_colab_mcp_reconnect.py
 """
 import asyncio
+import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -33,20 +35,23 @@ from colab_cli.state import SessionState
 import tempfile
 _REAL_TOKEN_PATH = cs.TOKEN_CONFIG_PATH
 _real_token_before = Path(_REAL_TOKEN_PATH).read_bytes() if Path(_REAL_TOKEN_PATH).exists() else None
-cs.TOKEN_CONFIG_PATH = str(Path(tempfile.mkdtemp()) / "token.json")
+_tmp_cfg = Path(tempfile.mkdtemp())
+cs.TOKEN_CONFIG_PATH = str(_tmp_cfg / "token.json")
+cs.PENDING_AUTH_PATH = str(_tmp_cfg / "pending_auth.json")
 
 
 # ------------------------------------------------------------- 1. PKCE ------
 
 class _FakeFlow:
-    def __init__(self):
-        self.code_verifier = None
+    def __init__(self, code_verifier=None):
+        self.code_verifier = code_verifier
         self.fetch_token_calls = []
         self.credentials = _FakeCreds()
 
     def authorization_url(self, **kwargs):
         # Mirrors the real Flow: only generates a verifier once a URL is built.
-        self.code_verifier = "verifier-from-start-oauth"
+        if self.code_verifier is None:
+            self.code_verifier = "verifier-from-start-oauth"
         return "https://accounts.google.com/fake-auth-url", "state"
 
     def fetch_token(self, **kwargs):
@@ -61,8 +66,8 @@ class _FakeCreds:
 _flow_instances_built = []
 
 
-def _fake_from_client_config(config, scopes):
-    flow = _FakeFlow()
+def _fake_from_client_config(config, scopes, code_verifier=None):
+    flow = _FakeFlow(code_verifier)
     _flow_instances_built.append(flow)
     return flow
 
@@ -99,6 +104,24 @@ assert res == {"status": "authenticated"}
 assert cs._state["_auth_flow"] is None, "flow should be cleared after completion"
 print("_complete_oauth reuses the SAME Flow (same PKCE code_verifier): OK")
 
+assert not os.path.exists(cs.PENDING_AUTH_PATH), "persisted verifier must be removed after success"
+print("pending-auth file is cleared after a successful login: OK")
+
+# Server restart between colab_auth() and colab_auth(code=...): the in-memory
+# flow is gone, but the persisted verifier must let the SAME PKCE exchange finish.
+_flow_instances_built.clear()
+cs._start_oauth()
+assert oct(os.stat(cs.PENDING_AUTH_PATH).st_mode & 0o777) == "0o600", "verifier file must be private"
+cs._state["_auth_flow"] = None  # simulate the restart
+res = cs._complete_oauth("code-after-restart")
+assert res == {"status": "authenticated"}
+rebuilt = _flow_instances_built[-1]
+assert len(_flow_instances_built) == 2 and rebuilt.code_verifier == "verifier-from-start-oauth", (
+    "after a restart the rebuilt Flow must carry the verifier from the URL that was handed out"
+)
+assert rebuilt.fetch_token_calls[0].get("code") == "code-after-restart"
+print("_complete_oauth survives a server restart via the persisted PKCE verifier: OK")
+
 # Calling colab_auth(code=...) with no pending flow must fail loudly, not
 # silently build a fresh (PKCE-broken) flow.
 cs._state["_auth_flow"] = None
@@ -108,6 +131,20 @@ try:
 except RuntimeError as e:
     assert "pending OAuth flow" in str(e)
 print("_complete_oauth without a pending flow raises instead of silently re-flowing: OK")
+
+# A persisted verifier older than the TTL is discarded (Google codes expire anyway).
+cs._start_oauth()
+cs._state["_auth_flow"] = None
+_old = json.load(open(cs.PENDING_AUTH_PATH))
+_old["created_at"] -= cs._PENDING_AUTH_TTL_S + 1
+json.dump(_old, open(cs.PENDING_AUTH_PATH, "w"))
+try:
+    cs._complete_oauth("stale-code")
+    raise AssertionError("expected RuntimeError for a stale pending flow")
+except RuntimeError as e:
+    assert "pending OAuth flow" in str(e)
+assert not os.path.exists(cs.PENDING_AUTH_PATH), "stale verifier file must be removed"
+print("stale persisted verifier is rejected and removed: OK")
 
 _gaof.InstalledAppFlow = _real_installed_app_flow
 

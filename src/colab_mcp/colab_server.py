@@ -66,6 +66,16 @@ logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 # Refresh a bit before the deadline so an execute call never races expiry.
 _TOKEN_REFRESH_MARGIN_S = 60
 
+# The pending OAuth flow's PKCE verifier is also persisted here (0600) so a
+# `colab_auth(code=...)` still completes if the MCP server process restarted
+# after `colab_auth()` handed out the URL — the claude CLI can and does restart
+# MCP servers between turns, which previously forced the user to redo the whole
+# browser sign-in. Google authorization codes expire after ~10 minutes, so an
+# older pending flow is useless and is discarded.
+PENDING_AUTH_PATH = os.path.join(os.path.dirname(TOKEN_CONFIG_PATH), "pending_auth.json")
+_PENDING_AUTH_TTL_S = 15 * 60
+_OAUTH_REDIRECT_URI = "https://sdk.cloud.google.com/applicationdefaultauthcode.html"
+
 # Per-MCP-process state. We could share a StateStore with the CLI but
 # process isolation keeps things simple.
 _state = {
@@ -347,20 +357,53 @@ def _ensure_remote_dirs(contents, api_dir: str) -> None:
         contents._request("PUT", "/".join(parts[:i]), json_data={"type": "directory"})
 
 
-def _start_oauth() -> str:
-    """Build the OAuth URL without consuming input. Returns the URL."""
-    from colab_cli.auth import PUBLIC_SCOPES
+def _oauth_client_config() -> dict:
     from importlib import resources
     config_resource = resources.files("colab_cli").joinpath("oauth_config.json")
-    client_config = json.loads(config_resource.read_text())
+    return json.loads(config_resource.read_text())
 
-    # Reproduce InstalledAppFlow + remote-redirect URL build, but don't run
-    # the blocking fetch_token.
+
+def _new_flow(code_verifier: Optional[str] = None):
+    from colab_cli.auth import PUBLIC_SCOPES
     from google_auth_oauthlib.flow import InstalledAppFlow
-    flow = InstalledAppFlow.from_client_config(client_config, PUBLIC_SCOPES)
-    flow.redirect_uri = "https://sdk.cloud.google.com/applicationdefaultauthcode.html"
+    flow = InstalledAppFlow.from_client_config(
+        _oauth_client_config(), PUBLIC_SCOPES, code_verifier=code_verifier,
+    )
+    flow.redirect_uri = _OAUTH_REDIRECT_URI
+    return flow
+
+
+def _save_pending_auth(code_verifier: str) -> None:
+    fd = os.open(PENDING_AUTH_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"code_verifier": code_verifier, "created_at": time.time()}, f)
+
+
+def _load_pending_auth() -> Optional[str]:
+    """Return a still-fresh persisted PKCE verifier, or None."""
+    try:
+        with open(PENDING_AUTH_PATH) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if time.time() - float(data.get("created_at", 0)) > _PENDING_AUTH_TTL_S:
+        _clear_pending_auth()
+        return None
+    return data.get("code_verifier") or None
+
+
+def _clear_pending_auth() -> None:
+    try:
+        os.remove(PENDING_AUTH_PATH)
+    except FileNotFoundError:
+        pass
+
+
+def _start_oauth() -> str:
+    """Build the OAuth URL without consuming input. Returns the URL."""
     # authorization_url() auto-generates flow.code_verifier and embeds a
     # code_challenge (PKCE) derived from it into the returned URL.
+    flow = _new_flow()
     auth_url, _ = flow.authorization_url(prompt="consent", token_usage="remote")
     _state["pending_auth_url"] = auth_url
     # Persist the SAME Flow object — not just the client config — so
@@ -370,19 +413,27 @@ def _start_oauth() -> str:
     # rejects (invalid_grant) since it no longer matches the code_challenge
     # already sent above. See docs/debug_notes.md.
     _state["_auth_flow"] = flow
+    # ...and the verifier on disk, so the flow survives a server restart.
+    _save_pending_auth(flow.code_verifier)
     return auth_url
 
 
 def _complete_oauth(code: str) -> dict:
     flow = _state.get("_auth_flow")
     if flow is None:
+        # Server restarted since colab_auth() handed out the URL: rebuild the
+        # flow around the persisted verifier (it must match the code_challenge
+        # in that URL, or Google rejects the code with invalid_grant).
+        verifier = _load_pending_auth()
+        if verifier:
+            flow = _new_flow(code_verifier=verifier)
+    if flow is None:
         raise RuntimeError(
-            "No pending OAuth flow (or the server restarted since it was "
-            "started). Call colab_auth with no arguments to get a fresh "
-            "authorization URL, then retry colab_auth(code=...)."
+            "No pending OAuth flow (none started, or it is older than "
+            f"{_PENDING_AUTH_TTL_S // 60} minutes). Call colab_auth with no "
+            "arguments to get a fresh authorization URL, then retry "
+            "colab_auth(code=...)."
         )
-    # Reuse the exact Flow instance from _start_oauth() so its PKCE
-    # code_verifier matches the code_challenge already sent to Google.
     flow.fetch_token(code=code)
     creds = flow.credentials
     # persist (matches the official CLI)
@@ -393,6 +444,7 @@ def _complete_oauth(code: str) -> dict:
     _state["client"] = Client(Prod(), AuthorizedSession(creds))
     _state["pending_auth_url"] = None
     _state["_auth_flow"] = None
+    _clear_pending_auth()
     return {"status": "authenticated"}
 
 
