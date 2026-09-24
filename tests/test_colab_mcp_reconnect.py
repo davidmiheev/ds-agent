@@ -105,6 +105,8 @@ assert cs._state["_auth_flow"] is None, "flow should be cleared after completion
 print("_complete_oauth reuses the SAME Flow (same PKCE code_verifier): OK")
 
 assert not os.path.exists(cs.PENDING_AUTH_PATH), "persisted verifier must be removed after success"
+assert oct(os.stat(cs.TOKEN_CONFIG_PATH).st_mode & 0o777) == "0o600", "token file holds a refresh token: must be 0600"
+print("token file is written 0600: OK")
 print("pending-auth file is cleared after a successful login: OK")
 
 # Server restart between colab_auth() and colab_auth(code=...): the in-memory

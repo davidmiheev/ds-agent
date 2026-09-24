@@ -1044,6 +1044,10 @@ in again. The verifier is now also written to
 Google codes expire in ~10) and `_complete_oauth` rebuilds the flow from it when
 the in-memory one is gone. The file is removed on success.
 
+Also: `token.json` (which holds a long-lived refresh token) was written with the
+default umask (0644). Both writers now go through `_write_private()` (0600, and
+tighten an existing file).
+
 ### Why the 2026-09-14 debugging pass missed these
 - **Mocks encoded the hypothesis.** "No real Google credentials available … so
   verified at the logic level": `_FakeContentsClient.upload` recorded whatever

@@ -116,8 +116,7 @@ def _get_creds():
                 creds.refresh(Request())
                 # persist the refreshed token
                 try:
-                    with open(TOKEN_CONFIG_PATH, "w") as f:
-                        f.write(creds.to_json())
+                    _write_private(TOKEN_CONFIG_PATH, creds.to_json())
                 except Exception:
                     pass
             except Exception as e:
@@ -373,10 +372,18 @@ def _new_flow(code_verifier: Optional[str] = None):
     return flow
 
 
-def _save_pending_auth(code_verifier: str) -> None:
-    fd = os.open(PENDING_AUTH_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+def _write_private(path: str, text: str) -> None:
+    """Write `text` to `path` with 0600 perms (also tightening an existing file)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w") as f:
-        json.dump({"code_verifier": code_verifier, "created_at": time.time()}, f)
+        f.write(text)
+
+
+def _save_pending_auth(code_verifier: str) -> None:
+    _write_private(PENDING_AUTH_PATH, json.dumps(
+        {"code_verifier": code_verifier, "created_at": time.time()}
+    ))
 
 
 def _load_pending_auth() -> Optional[str]:
@@ -436,9 +443,9 @@ def _complete_oauth(code: str) -> dict:
         )
     flow.fetch_token(code=code)
     creds = flow.credentials
-    # persist (matches the official CLI)
-    with open(TOKEN_CONFIG_PATH, "w") as f:
-        f.write(creds.to_json())
+    # persist (same file the official CLI uses), readable only by the owner:
+    # it holds a long-lived refresh token.
+    _write_private(TOKEN_CONFIG_PATH, creds.to_json())
     _state["creds"] = creds
     from google.auth.transport.requests import AuthorizedSession
     _state["client"] = Client(Prod(), AuthorizedSession(creds))
