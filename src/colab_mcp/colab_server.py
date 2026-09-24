@@ -23,6 +23,7 @@ import base64
 import json
 import logging
 import os
+import posixpath
 import sys
 import time
 import uuid
@@ -275,8 +276,9 @@ async def list_tools() -> list[types.Tool]:
                 "`colab_execute` code can open it. Always lands under "
                 "/content/ on the runtime (the runtime's kernel cwd is "
                 "chdir'd to /content) — pass a bare filename or relative "
-                "sub-path for `remote_path`, and reference that exact same "
-                "relative path with open(...) from colab_execute code."
+                "sub-path for `remote_path` (missing sub-directories are "
+                "created), and reference that exact same relative path with "
+                "open(...) from colab_execute code."
             ),
             inputSchema={
                 "type": "object",
@@ -319,6 +321,31 @@ async def list_tools() -> list[types.Tool]:
 
 
 # ---------------- tool implementations ----------------
+
+def _content_relative_path(remote_path: str) -> str:
+    """Normalize a user-supplied upload path to one relative to /content.
+
+    A leading `/` or `/content/` is accepted and stripped; anything that would
+    resolve outside /content (e.g. `../etc/x`) is rejected.
+    """
+    rel = posixpath.normpath(remote_path.strip().lstrip("/"))
+    if rel == "content" or rel.startswith("content/"):
+        rel = rel[len("content"):].lstrip("/")
+    if rel in ("", ".") or rel == ".." or rel.startswith("../"):
+        raise ValueError(f"remote_path must name a file under /content, got {remote_path!r}")
+    return rel
+
+
+def _ensure_remote_dirs(contents, api_dir: str) -> None:
+    """Create each missing directory along `api_dir` via the Contents API.
+
+    PUT with type=directory is idempotent in Jupyter's contents API (an
+    existing directory is left as-is), so no existence check is needed.
+    """
+    parts = [p for p in api_dir.split("/") if p]
+    for i in range(1, len(parts) + 1):
+        contents._request("PUT", "/".join(parts[:i]), json_data={"type": "directory"})
+
 
 def _start_oauth() -> str:
     """Build the OAuth URL without consuming input. Returns the URL."""
@@ -511,14 +538,24 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                 return [types.TextContent(type="text", text=json.dumps(
                     {"error": f"local file not found: {local_path}"}
                 ))]
-            remote_path = (arguments.get("remote_path") or os.path.basename(local_path)).lstrip("/")
+            try:
+                remote_path = _content_relative_path(
+                    arguments.get("remote_path") or os.path.basename(local_path)
+                )
+            except ValueError as e:
+                return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
             # Ensures a session/runtime exists, the proxy token is fresh, and
-            # the kernel's cwd is /content — the same namespace the Contents
-            # API (used below) is always rooted at, so this upload's target
-            # and a later open(remote_path) in colab_execute code agree.
+            # the kernel's cwd is /content.
             _active_runtime()
             contents = ContentsClient(_state["active_session"])
-            contents.upload(local_path, remote_path)
+            # The Contents API is rooted at the Jupyter server root, which on
+            # Colab is `/` — NOT /content (the official CLI's own `install -r`
+            # uploads to "content/<name>" and then reads "/content/<name>").
+            # So prefix "content/", and create missing parent dirs first: a PUT
+            # to a path whose parent doesn't exist fails with a bare HTTP 500.
+            api_path = f"content/{remote_path}"
+            _ensure_remote_dirs(contents, posixpath.dirname(api_path))
+            contents.upload(local_path, api_path)
             return [types.TextContent(type="text", text=json.dumps({
                 "status": "uploaded",
                 "remote_path": remote_path,

@@ -27,6 +27,14 @@ from colab_mcp import colab_server as cs
 from colab_cli.client import Accelerator, Assignment, PostAssignmentResponse, RuntimeProxyInfo, Shape, Variant
 from colab_cli.state import SessionState
 
+# _complete_oauth() persists credentials to TOKEN_CONFIG_PATH. Point it at a
+# throwaway file: with the real ~/.config/colab-cli/token.json, running this
+# test silently replaced the user's real Colab token with the fake "{}" below.
+import tempfile
+_REAL_TOKEN_PATH = cs.TOKEN_CONFIG_PATH
+_real_token_before = Path(_REAL_TOKEN_PATH).read_bytes() if Path(_REAL_TOKEN_PATH).exists() else None
+cs.TOKEN_CONFIG_PATH = str(Path(tempfile.mkdtemp()) / "token.json")
+
 
 # ------------------------------------------------------------- 1. PKCE ------
 
@@ -232,12 +240,17 @@ print("cached runtime is reused without re-chdir'ing: OK")
 
 class _FakeContentsClient:
     calls = []
+    dirs = []
 
     def __init__(self, session_state):
         self.session_state = session_state
 
     def upload(self, local_path, remote_path):
         _FakeContentsClient.calls.append((local_path, remote_path))
+
+    def _request(self, method, path, params=None, json_data=None):
+        assert method == "PUT" and json_data == {"type": "directory"}, (method, json_data)
+        _FakeContentsClient.dirs.append(path)
 
 
 import colab_cli.contents as _contents_mod
@@ -255,17 +268,35 @@ try:
     payload = result[0].text
     expected_name = os.path.basename(local_tmp)
     assert f'"remote_path": "{expected_name}"' in payload, payload
-    assert _FakeContentsClient.calls[-1] == (local_tmp, expected_name)
-    print("colab_upload defaults remote_path to basename: OK ->", payload[:120])
+    # The Contents API is rooted at `/` on Colab (not /content — verified
+    # against a live T4 runtime, and matching the official CLI's own
+    # `install -r`, which uploads to "content/<name>"), so the API path
+    # must carry the "content/" prefix for the file to land in the kernel's cwd.
+    assert _FakeContentsClient.calls[-1] == (local_tmp, f"content/{expected_name}")
+    print("colab_upload defaults remote_path to basename under content/: OK ->", payload[:120])
 
     # A leading slash on an explicit remote_path is stripped so it stays
-    # under the SAME /content root colab_execute's cwd uses, instead of
-    # resolving somewhere else via the Contents API's own path handling.
+    # under the SAME /content root colab_execute's cwd uses; missing parent
+    # dirs are created first (a PUT under a missing dir is a bare HTTP 500).
+    _FakeContentsClient.dirs.clear()
     result2 = asyncio.run(cs.call_tool("colab_upload", {"local_path": local_tmp, "remote_path": "/data/x.csv"}))
     payload2 = result2[0].text
     assert '"remote_path": "data/x.csv"' in payload2, payload2
-    assert _FakeContentsClient.calls[-1] == (local_tmp, "data/x.csv")
-    print("colab_upload strips a leading slash so paths stay under /content: OK")
+    assert _FakeContentsClient.calls[-1] == (local_tmp, "content/data/x.csv")
+    assert _FakeContentsClient.dirs == ["content", "content/data"], _FakeContentsClient.dirs
+    print("colab_upload strips a leading slash and creates parent dirs: OK")
+
+    # An explicit /content/ prefix is not doubled up.
+    asyncio.run(cs.call_tool("colab_upload", {"local_path": local_tmp, "remote_path": "/content/y.csv"}))
+    assert _FakeContentsClient.calls[-1] == (local_tmp, "content/y.csv"), _FakeContentsClient.calls[-1]
+    print("colab_upload accepts an explicit /content/ prefix without doubling it: OK")
+
+    # Paths escaping /content are rejected, nothing uploaded.
+    before = len(_FakeContentsClient.calls)
+    result_esc = asyncio.run(cs.call_tool("colab_upload", {"local_path": local_tmp, "remote_path": "../etc/x"}))
+    assert "must name a file under /content" in result_esc[0].text, result_esc[0].text
+    assert len(_FakeContentsClient.calls) == before
+    print("colab_upload rejects paths escaping /content: OK")
 
     # Missing local file -> clean error, no upload attempted.
     before = len(_FakeContentsClient.calls)
@@ -276,5 +307,9 @@ try:
 finally:
     os.unlink(local_tmp)
     _contents_mod.ContentsClient = _real_contents_client
+
+_real_token_after = Path(_REAL_TOKEN_PATH).read_bytes() if Path(_REAL_TOKEN_PATH).exists() else None
+assert _real_token_after == _real_token_before, "test must never touch the real Colab token file"
+print("real ~/.config/colab-cli/token.json left untouched: OK")
 
 print("\nALL COLAB MCP RECONNECT/PKCE/UPLOAD CHECKS PASSED")
