@@ -347,6 +347,26 @@ finally:
     os.unlink(local_tmp)
     _contents_mod.ContentsClient = _real_contents_client
 
+# ------------------------------------------------ 4. execute outputs -------
+# A real 1x1 PNG, base64 with a trailing newline exactly as Jupyter sends it.
+_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\n"
+blocks = cs._output_blocks([
+    {"output_type": "stream", "text": "hello\n"},
+    {"output_type": "display_data", "data": {"text/plain": "<Figure size 640x480 with 1 Axes>", "image/png": _png}},
+    {"output_type": "execute_result", "data": {"text/plain": "42"}},
+    {"output_type": "display_data", "data": {"image/svg+xml": "<svg></svg>", "text/plain": "<svg>"}},
+    {"output_type": "error", "ename": "ValueError", "evalue": "boom", "traceback": []},
+])
+kinds = [b.type for b in blocks]
+assert kinds == ["text", "image", "text", "text", "text"], kinds
+img = blocks[1]
+assert img.mimeType == "image/png" and "\n" not in img.data, "image block must validate and carry clean base64"
+import base64
+assert base64.b64decode(img.data).startswith(b"\x89PNG"), "payload must still decode to the PNG"
+assert "<Figure" not in " ".join(b.text for b in blocks if b.type == "text"), "figure repr is noise next to the image"
+assert "SVG output" in blocks[3].text and "ValueError: boom" in blocks[4].text
+print("colab_execute outputs -> MCP blocks (image validates, base64 cleaned, svg/errors handled): OK")
+
 _real_token_after = Path(_REAL_TOKEN_PATH).read_bytes() if Path(_REAL_TOKEN_PATH).exists() else None
 assert _real_token_after == _real_token_before, "test must never touch the real Colab token file"
 print("real ~/.config/colab-cli/token.json left untouched: OK")

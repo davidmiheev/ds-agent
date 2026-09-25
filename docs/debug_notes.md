@@ -1048,6 +1048,15 @@ Also: `token.json` (which holds a long-lived refresh token) was written with the
 default umask (0644). Both writers now go through `_write_private()` (0600, and
 tighten an existing file).
 
+### 5. `colab_execute` could not return a single figure
+Every matplotlib output crashed the call with `1 validation error for ImageContent — mimeType
+Field required`: the server built `types.ImageContent(mime_type=...)`, but the SDK field is
+`mimeType`. Jupyter's base64 payloads also end in `\n`. Output conversion is now
+`_output_blocks()` (unit-tested): `mimeType=`, whitespace stripped from the base64, the
+`<Figure ...>` text repr dropped next to its image, and SVG — raw markup in Jupyter, not
+base64 — reported as a note instead of an invalid image. Verified live: a plot on a CPU
+runtime comes back as a decodable PNG.
+
 ### Why the 2026-09-14 debugging pass missed these
 - **Mocks encoded the hypothesis.** "No real Google credentials available … so
   verified at the logic level": `_FakeContentsClient.upload` recorded whatever

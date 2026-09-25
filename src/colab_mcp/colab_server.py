@@ -331,6 +331,41 @@ async def list_tools() -> list[types.Tool]:
 
 # ---------------- tool implementations ----------------
 
+def _output_blocks(outputs: list[dict]) -> list[types.ContentBlock]:
+    """Convert Jupyter kernel outputs into MCP content blocks."""
+    blocks: list[types.ContentBlock] = []
+    for out in outputs:
+        ot = out.get("output_type")
+        if ot == "stream":
+            blocks.append(types.TextContent(type="text", text=out.get("text", "")))
+        elif "data" in out:
+            data = out["data"]
+            images = [m for m in ("image/png", "image/jpeg") if m in data]
+            if "text/plain" in data and not images and "image/svg+xml" not in data:
+                # A figure's text/plain is just "<Figure size ...>" — skip it when there is an image.
+                blocks.append(types.TextContent(type="text", text=data["text/plain"]))
+            for mime in images:
+                # The SDK field is `mimeType` (constructing with `mime_type` fails validation, so
+                # every figure used to crash colab_execute), and Jupyter's base64 payloads may
+                # carry line breaks, which MCP clients reject.
+                blocks.append(types.ImageContent(
+                    type="image", mimeType=mime, data="".join(data[mime].split()),
+                ))
+            if "image/svg+xml" in data and not images:
+                # Jupyter sends SVG as raw markup, not base64, and MCP image content is raster in
+                # practice — point the caller at a PNG instead of shipping unusable content.
+                blocks.append(types.TextContent(type="text", text=(
+                    f"[SVG output, {len(data['image/svg+xml'])} chars, not returned — "
+                    "use a PNG backend, e.g. %config InlineBackend.figure_format = 'png']"
+                )))
+        elif ot == "error":
+            tb = "\n".join(out.get("traceback", [])) or f"{out.get('ename')}: {out.get('evalue')}"
+            blocks.append(types.TextContent(type="text", text=f"[error]\n{tb}"))
+    if not blocks:
+        blocks.append(types.TextContent(type="text", text="(no output)"))
+    return blocks
+
+
 def _content_relative_path(remote_path: str) -> str:
     """Normalize a user-supplied upload path to one relative to /content.
 
@@ -564,31 +599,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
             timeout = float(arguments.get("timeout", 120))
             runtime = _active_runtime()
             outputs = runtime.execute_code(code, timeout=timeout)
-            blocks: list[types.ContentBlock] = []
-            for out in outputs:
-                ot = out.get("output_type")
-                if ot == "stream":
-                    blocks.append(types.TextContent(
-                        type="text",
-                        text=out.get("text", ""),
-                    ))
-                elif "data" in out:
-                    data = out["data"]
-                    if "text/plain" in data:
-                        blocks.append(types.TextContent(type="text", text=data["text/plain"]))
-                    for mime in ("image/png", "image/jpeg", "image/svg+xml"):
-                        if mime in data:
-                            blocks.append(types.ImageContent(
-                                type="image",
-                                mime_type=mime,
-                                data=data[mime],  # already base64 per Jupyter spec
-                            ))
-                elif ot == "error":
-                    tb = "\n".join(out.get("traceback", [])) or f"{out.get('ename')}: {out.get('evalue')}"
-                    blocks.append(types.TextContent(type="text", text=f"[error]\n{tb}"))
-            if not blocks:
-                blocks.append(types.TextContent(type="text", text="(no output)"))
-            return blocks
+            return _output_blocks(outputs)
 
         if name == "colab_upload":
             from colab_cli.contents import ContentsClient
