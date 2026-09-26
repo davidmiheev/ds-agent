@@ -23,6 +23,7 @@ import base64
 import json
 import logging
 import os
+import posixpath
 import sys
 import time
 import uuid
@@ -65,6 +66,16 @@ logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 # Refresh a bit before the deadline so an execute call never races expiry.
 _TOKEN_REFRESH_MARGIN_S = 60
 
+# The pending OAuth flow's PKCE verifier is also persisted here (0600) so a
+# `colab_auth(code=...)` still completes if the MCP server process restarted
+# after `colab_auth()` handed out the URL — the claude CLI can and does restart
+# MCP servers between turns, which previously forced the user to redo the whole
+# browser sign-in. Google authorization codes expire after ~10 minutes, so an
+# older pending flow is useless and is discarded.
+PENDING_AUTH_PATH = os.path.join(os.path.dirname(TOKEN_CONFIG_PATH), "pending_auth.json")
+_PENDING_AUTH_TTL_S = 15 * 60
+_OAUTH_REDIRECT_URI = "https://sdk.cloud.google.com/applicationdefaultauthcode.html"
+
 # Per-MCP-process state. We could share a StateStore with the CLI but
 # process isolation keeps things simple.
 _state = {
@@ -105,8 +116,7 @@ def _get_creds():
                 creds.refresh(Request())
                 # persist the refreshed token
                 try:
-                    with open(TOKEN_CONFIG_PATH, "w") as f:
-                        f.write(creds.to_json())
+                    _write_private(TOKEN_CONFIG_PATH, creds.to_json())
                 except Exception:
                     pass
             except Exception as e:
@@ -275,8 +285,9 @@ async def list_tools() -> list[types.Tool]:
                 "`colab_execute` code can open it. Always lands under "
                 "/content/ on the runtime (the runtime's kernel cwd is "
                 "chdir'd to /content) — pass a bare filename or relative "
-                "sub-path for `remote_path`, and reference that exact same "
-                "relative path with open(...) from colab_execute code."
+                "sub-path for `remote_path` (missing sub-directories are "
+                "created), and reference that exact same relative path with "
+                "open(...) from colab_execute code."
             ),
             inputSchema={
                 "type": "object",
@@ -320,20 +331,121 @@ async def list_tools() -> list[types.Tool]:
 
 # ---------------- tool implementations ----------------
 
-def _start_oauth() -> str:
-    """Build the OAuth URL without consuming input. Returns the URL."""
-    from colab_cli.auth import PUBLIC_SCOPES
+def _output_blocks(outputs: list[dict]) -> list[types.ContentBlock]:
+    """Convert Jupyter kernel outputs into MCP content blocks."""
+    blocks: list[types.ContentBlock] = []
+    for out in outputs:
+        ot = out.get("output_type")
+        if ot == "stream":
+            blocks.append(types.TextContent(type="text", text=out.get("text", "")))
+        elif "data" in out:
+            data = out["data"]
+            images = [m for m in ("image/png", "image/jpeg") if m in data]
+            if "text/plain" in data and not images and "image/svg+xml" not in data:
+                # A figure's text/plain is just "<Figure size ...>" — skip it when there is an image.
+                blocks.append(types.TextContent(type="text", text=data["text/plain"]))
+            for mime in images:
+                # The SDK field is `mimeType` (constructing with `mime_type` fails validation, so
+                # every figure used to crash colab_execute), and Jupyter's base64 payloads may
+                # carry line breaks, which MCP clients reject.
+                blocks.append(types.ImageContent(
+                    type="image", mimeType=mime, data="".join(data[mime].split()),
+                ))
+            if "image/svg+xml" in data and not images:
+                # Jupyter sends SVG as raw markup, not base64, and MCP image content is raster in
+                # practice — point the caller at a PNG instead of shipping unusable content.
+                blocks.append(types.TextContent(type="text", text=(
+                    f"[SVG output, {len(data['image/svg+xml'])} chars, not returned — "
+                    "use a PNG backend, e.g. %config InlineBackend.figure_format = 'png']"
+                )))
+        elif ot == "error":
+            tb = "\n".join(out.get("traceback", [])) or f"{out.get('ename')}: {out.get('evalue')}"
+            blocks.append(types.TextContent(type="text", text=f"[error]\n{tb}"))
+    if not blocks:
+        blocks.append(types.TextContent(type="text", text="(no output)"))
+    return blocks
+
+
+def _content_relative_path(remote_path: str) -> str:
+    """Normalize a user-supplied upload path to one relative to /content.
+
+    A leading `/` or `/content/` is accepted and stripped; anything that would
+    resolve outside /content (e.g. `../etc/x`) is rejected.
+    """
+    rel = posixpath.normpath(remote_path.strip().lstrip("/"))
+    if rel == "content" or rel.startswith("content/"):
+        rel = rel[len("content"):].lstrip("/")
+    if rel in ("", ".") or rel == ".." or rel.startswith("../"):
+        raise ValueError(f"remote_path must name a file under /content, got {remote_path!r}")
+    return rel
+
+
+def _ensure_remote_dirs(contents, api_dir: str) -> None:
+    """Create each missing directory along `api_dir` via the Contents API.
+
+    PUT with type=directory is idempotent in Jupyter's contents API (an
+    existing directory is left as-is), so no existence check is needed.
+    """
+    parts = [p for p in api_dir.split("/") if p]
+    for i in range(1, len(parts) + 1):
+        contents._request("PUT", "/".join(parts[:i]), json_data={"type": "directory"})
+
+
+def _oauth_client_config() -> dict:
     from importlib import resources
     config_resource = resources.files("colab_cli").joinpath("oauth_config.json")
-    client_config = json.loads(config_resource.read_text())
+    return json.loads(config_resource.read_text())
 
-    # Reproduce InstalledAppFlow + remote-redirect URL build, but don't run
-    # the blocking fetch_token.
+
+def _new_flow(code_verifier: Optional[str] = None):
+    from colab_cli.auth import PUBLIC_SCOPES
     from google_auth_oauthlib.flow import InstalledAppFlow
-    flow = InstalledAppFlow.from_client_config(client_config, PUBLIC_SCOPES)
-    flow.redirect_uri = "https://sdk.cloud.google.com/applicationdefaultauthcode.html"
+    flow = InstalledAppFlow.from_client_config(
+        _oauth_client_config(), PUBLIC_SCOPES, code_verifier=code_verifier,
+    )
+    flow.redirect_uri = _OAUTH_REDIRECT_URI
+    return flow
+
+
+def _write_private(path: str, text: str) -> None:
+    """Write `text` to `path` with 0600 perms (also tightening an existing file)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+
+
+def _save_pending_auth(code_verifier: str) -> None:
+    _write_private(PENDING_AUTH_PATH, json.dumps(
+        {"code_verifier": code_verifier, "created_at": time.time()}
+    ))
+
+
+def _load_pending_auth() -> Optional[str]:
+    """Return a still-fresh persisted PKCE verifier, or None."""
+    try:
+        with open(PENDING_AUTH_PATH) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if time.time() - float(data.get("created_at", 0)) > _PENDING_AUTH_TTL_S:
+        _clear_pending_auth()
+        return None
+    return data.get("code_verifier") or None
+
+
+def _clear_pending_auth() -> None:
+    try:
+        os.remove(PENDING_AUTH_PATH)
+    except FileNotFoundError:
+        pass
+
+
+def _start_oauth() -> str:
+    """Build the OAuth URL without consuming input. Returns the URL."""
     # authorization_url() auto-generates flow.code_verifier and embeds a
     # code_challenge (PKCE) derived from it into the returned URL.
+    flow = _new_flow()
     auth_url, _ = flow.authorization_url(prompt="consent", token_usage="remote")
     _state["pending_auth_url"] = auth_url
     # Persist the SAME Flow object — not just the client config — so
@@ -343,29 +455,38 @@ def _start_oauth() -> str:
     # rejects (invalid_grant) since it no longer matches the code_challenge
     # already sent above. See docs/debug_notes.md.
     _state["_auth_flow"] = flow
+    # ...and the verifier on disk, so the flow survives a server restart.
+    _save_pending_auth(flow.code_verifier)
     return auth_url
 
 
 def _complete_oauth(code: str) -> dict:
     flow = _state.get("_auth_flow")
     if flow is None:
+        # Server restarted since colab_auth() handed out the URL: rebuild the
+        # flow around the persisted verifier (it must match the code_challenge
+        # in that URL, or Google rejects the code with invalid_grant).
+        verifier = _load_pending_auth()
+        if verifier:
+            flow = _new_flow(code_verifier=verifier)
+    if flow is None:
         raise RuntimeError(
-            "No pending OAuth flow (or the server restarted since it was "
-            "started). Call colab_auth with no arguments to get a fresh "
-            "authorization URL, then retry colab_auth(code=...)."
+            "No pending OAuth flow (none started, or it is older than "
+            f"{_PENDING_AUTH_TTL_S // 60} minutes). Call colab_auth with no "
+            "arguments to get a fresh authorization URL, then retry "
+            "colab_auth(code=...)."
         )
-    # Reuse the exact Flow instance from _start_oauth() so its PKCE
-    # code_verifier matches the code_challenge already sent to Google.
     flow.fetch_token(code=code)
     creds = flow.credentials
-    # persist (matches the official CLI)
-    with open(TOKEN_CONFIG_PATH, "w") as f:
-        f.write(creds.to_json())
+    # persist (same file the official CLI uses), readable only by the owner:
+    # it holds a long-lived refresh token.
+    _write_private(TOKEN_CONFIG_PATH, creds.to_json())
     _state["creds"] = creds
     from google.auth.transport.requests import AuthorizedSession
     _state["client"] = Client(Prod(), AuthorizedSession(creds))
     _state["pending_auth_url"] = None
     _state["_auth_flow"] = None
+    _clear_pending_auth()
     return {"status": "authenticated"}
 
 
@@ -478,31 +599,7 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
             timeout = float(arguments.get("timeout", 120))
             runtime = _active_runtime()
             outputs = runtime.execute_code(code, timeout=timeout)
-            blocks: list[types.ContentBlock] = []
-            for out in outputs:
-                ot = out.get("output_type")
-                if ot == "stream":
-                    blocks.append(types.TextContent(
-                        type="text",
-                        text=out.get("text", ""),
-                    ))
-                elif "data" in out:
-                    data = out["data"]
-                    if "text/plain" in data:
-                        blocks.append(types.TextContent(type="text", text=data["text/plain"]))
-                    for mime in ("image/png", "image/jpeg", "image/svg+xml"):
-                        if mime in data:
-                            blocks.append(types.ImageContent(
-                                type="image",
-                                mime_type=mime,
-                                data=data[mime],  # already base64 per Jupyter spec
-                            ))
-                elif ot == "error":
-                    tb = "\n".join(out.get("traceback", [])) or f"{out.get('ename')}: {out.get('evalue')}"
-                    blocks.append(types.TextContent(type="text", text=f"[error]\n{tb}"))
-            if not blocks:
-                blocks.append(types.TextContent(type="text", text="(no output)"))
-            return blocks
+            return _output_blocks(outputs)
 
         if name == "colab_upload":
             from colab_cli.contents import ContentsClient
@@ -511,14 +608,24 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                 return [types.TextContent(type="text", text=json.dumps(
                     {"error": f"local file not found: {local_path}"}
                 ))]
-            remote_path = (arguments.get("remote_path") or os.path.basename(local_path)).lstrip("/")
+            try:
+                remote_path = _content_relative_path(
+                    arguments.get("remote_path") or os.path.basename(local_path)
+                )
+            except ValueError as e:
+                return [types.TextContent(type="text", text=json.dumps({"error": str(e)}))]
             # Ensures a session/runtime exists, the proxy token is fresh, and
-            # the kernel's cwd is /content — the same namespace the Contents
-            # API (used below) is always rooted at, so this upload's target
-            # and a later open(remote_path) in colab_execute code agree.
+            # the kernel's cwd is /content.
             _active_runtime()
             contents = ContentsClient(_state["active_session"])
-            contents.upload(local_path, remote_path)
+            # The Contents API is rooted at the Jupyter server root, which on
+            # Colab is `/` — NOT /content (the official CLI's own `install -r`
+            # uploads to "content/<name>" and then reads "/content/<name>").
+            # So prefix "content/", and create missing parent dirs first: a PUT
+            # to a path whose parent doesn't exist fails with a bare HTTP 500.
+            api_path = f"content/{remote_path}"
+            _ensure_remote_dirs(contents, posixpath.dirname(api_path))
+            contents.upload(local_path, api_path)
             return [types.TextContent(type="text", text=json.dumps({
                 "status": "uploaded",
                 "remote_path": remote_path,

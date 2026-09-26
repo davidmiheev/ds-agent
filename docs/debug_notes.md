@@ -983,6 +983,97 @@ with `code_challenge`/`code_challenge_method=S256` visibly present,
 confirming PKCE is genuinely engaged (not just theoretically, per the
 `authorization_url()` source read above).
 
+## colab_upload lands in `/` not `/content`; Kaggle proxy drops proxy env; test clobbers real Colab token (2026-09-24)
+
+Found while using both MCP servers from a Claude Code cloud sandbox (TLS-intercepting
+egress proxy) against a **live** Colab T4 runtime and the live Kaggle MCP.
+
+### 1. `colab_upload` wrote to the Jupyter root (`/`), not `/content`
+Symptom: `colab_upload(local, "x.py")` returned `"status": "uploaded"`, but
+`open("x.py")` in `colab_execute` raised `FileNotFoundError`; `find /` showed the
+file at `/x.py`. Any `remote_path` with a sub-directory (`ladder/utils.py`) failed
+with a bare `HTTP 500` even after `os.makedirs("ladder")` in the kernel (that made
+`/content/ladder`, not `/ladder`).
+
+Root cause: the Contents API is rooted at the **Jupyter server root**, which on
+Colab is `/`. The 2026-09-14 entry above asserted it is "always rooted at
+`/content`" — `contents.py` alone doesn't say either way (it just builds
+`{base_url}/api/contents/{path}`), but the official CLI's own `install -r`
+settles it: it uploads to `f"content/{basename}"` and then passes
+`-r /content/{basename}` to pip (`commands/automation.py`). Jupyter's PUT also
+does not create parent directories, hence the 500 on nested paths.
+
+Fix: `colab_upload` keeps the user-facing contract (`remote_path` is relative
+to `/content`, which is the kernel cwd) but sends `content/<remote_path>` to the
+API, creates each missing parent via `PUT {"type": "directory"}` (idempotent),
+accepts an explicit `/content/` prefix without doubling it, and rejects paths
+that normalize outside `/content` (`../x`).
+
+### 2. Kaggle proxy: `npx mcp-remote` started without proxy/CA env
+Symptom (claude CLI): `MCP server kaggle connection timed out after 30000ms`.
+Running the proxy by hand showed the real error — `npm error code
+SELF_SIGNED_CERT_IN_CHAIN` fetching `mcp-remote`, then `Connection closed`.
+
+Root cause: `StdioServerParameters(command="npx", ...)` had no `env`, so the mcp
+SDK gives the child only `get_default_environment()` (HOME, PATH, SHELL, ...).
+`HTTPS_PROXY` and `NODE_EXTRA_CA_CERTS` were dropped even though the proxy
+process itself had them. On the deploy host (direct egress, no interception)
+this is invisible — which is why the 2026-09-06 live verification passed.
+
+Fix: `env=_upstream_env()` = SDK defaults + an allow-list of proxy/CA vars
+(`HTTPS_PROXY`/`NO_PROXY`/…, `NODE_EXTRA_CA_CERTS`, `NODE_USE_ENV_PROXY`,
+`SSL_CERT_FILE`, `npm_config_cafile`, `npm_config_registry`). Secrets such as
+`KAGGLE_MCP_TOKEN` are deliberately not forwarded. Verified: unfixed `main`
+reproduces `SELF_SIGNED_CERT_IN_CHAIN` behind the sandbox proxy; the fix lists
+all 71 upstream tools in ~3.5s.
+
+### 3. `tests/test_colab_mcp_reconnect.py` overwrote the real Colab token
+The test drives `_complete_oauth()` with a fake flow whose credentials serialize
+to `"{}"`, and `_complete_oauth()` writes `TOKEN_CONFIG_PATH` — the real
+`~/.config/colab-cli/token.json`. Running the test suite silently logged the
+user out (next server start: `missing fields client_secret, client_id,
+refresh_token`). The test now points `cs.TOKEN_CONFIG_PATH` at a temp file and
+asserts the real file is byte-identical afterwards.
+
+### 4. A pending `colab_auth` login did not survive a server restart
+The PKCE verifier lived only in `_state["_auth_flow"]`. The claude CLI restarted
+the colab MCP server between `colab_auth()` and `colab_auth(code=...)` — the
+user's first real code failed with "No pending OAuth flow" and they had to sign
+in again. The verifier is now also written to
+`~/.config/colab-cli/pending_auth.json` (0600, discarded after 15 min since
+Google codes expire in ~10) and `_complete_oauth` rebuilds the flow from it when
+the in-memory one is gone. The file is removed on success.
+
+Also: `token.json` (which holds a long-lived refresh token) was written with the
+default umask (0644). Both writers now go through `_write_private()` (0600, and
+tighten an existing file).
+
+### 5. `colab_execute` could not return a single figure
+Every matplotlib output crashed the call with `1 validation error for ImageContent — mimeType
+Field required`: the server built `types.ImageContent(mime_type=...)`, but the SDK field is
+`mimeType`. Jupyter's base64 payloads also end in `\n`. Output conversion is now
+`_output_blocks()` (unit-tested): `mimeType=`, whitespace stripped from the base64, the
+`<Figure ...>` text repr dropped next to its image, and SVG — raw markup in Jupyter, not
+base64 — reported as a note instead of an invalid image. Verified live: a plot on a CPU
+runtime comes back as a decodable PNG.
+
+### Why the 2026-09-14 debugging pass missed these
+- **Mocks encoded the hypothesis.** "No real Google credentials available … so
+  verified at the logic level": `_FakeContentsClient.upload` recorded whatever
+  path it got, so the test asserted the code did what the author believed, not
+  what Colab does. The one fact that mattered (where the API is rooted) was never
+  observed; one live `colab_upload` + `os.path.exists` would have caught it.
+- **Read the callee, not the callers.** `contents.py` was read to "confirm" the
+  root; the CLI's own caller (`automation.py`'s `content/` prefix) contradicted it.
+- **Tests had real side effects on `$HOME`**, and nobody ran them on a machine
+  that had a real token to lose.
+- **Kaggle was only ever exercised from the deploy host**, whose network makes the
+  missing env harmless; no run happened behind a proxy.
+
+Takeaway: for third-party API surfaces, a mock-only test is a statement of the
+hypothesis, not evidence. Get one live observation (or mark the claim
+unverified in the PR), and sandbox every test that can write to `$HOME`.
+
 ## Git / network
 
 - **SSH to GitHub fails over IPv6** on this box: `git push` dies with

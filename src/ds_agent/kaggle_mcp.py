@@ -37,7 +37,7 @@ import sys
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters, types
-from mcp.client.stdio import stdio_client
+from mcp.client.stdio import get_default_environment, stdio_client
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
@@ -45,6 +45,25 @@ LOG = logging.getLogger("kaggle-mcp-proxy")
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 
 KAGGLE_TOKEN = os.environ.get("KAGGLE_MCP_TOKEN", "").strip()
+
+# Env vars `npx mcp-remote` needs to reach kaggle.com from behind an HTTP(S)
+# proxy. With no explicit `env`, the mcp SDK hands the child process only its
+# small "safe" default set (HOME, PATH, ...), dropping all of these — behind a
+# TLS-intercepting proxy (sandboxes, corporate networks) npm then fails with
+# SELF_SIGNED_CERT_IN_CHAIN and the proxy dies before `initialize`, which the
+# claude CLI only reports as a connect timeout. See docs/debug_notes.md.
+_UPSTREAM_PASSTHROUGH_ENV = (
+    "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
+    "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+    "NODE_EXTRA_CA_CERTS", "NODE_USE_ENV_PROXY", "SSL_CERT_FILE",
+    "npm_config_cafile", "npm_config_registry",
+)
+
+
+def _upstream_env() -> dict[str, str]:
+    env = get_default_environment()
+    env.update({k: os.environ[k] for k in _UPSTREAM_PASSTHROUGH_ENV if k in os.environ})
+    return env
 
 # Set once, before the CLI-facing server loop starts (see _main) — every
 # handler below just reads this. anyio task groups (used internally by
@@ -149,6 +168,7 @@ async def _main() -> None:
             "-y", "mcp-remote", "https://www.kaggle.com/mcp",
             "--header", f"Authorization: Bearer {KAGGLE_TOKEN}",
         ],
+        env=_upstream_env(),
     )
     # The upstream connection and the CLI-facing server loop share this one
     # task for their entire lifetime — required for anyio's task-group-based
