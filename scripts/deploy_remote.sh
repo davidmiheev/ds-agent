@@ -183,13 +183,15 @@ echo "==> [5/6] Verifying kaggle remote MCP (Bearer token from .env)"
 # ds_agent.kaggle_mcp (the local proxy that mcp.json's "kaggle" entry
 # actually runs — it auto-corrects known-bad Kaggle tool params before
 # forwarding, see docs/debug_notes.md). If this raw check fails, the proxy
-# will too, since it depends on the exact same upstream connection.
+# will too, since it depends on the exact same upstream connection. It only
+# proves connectivity: Kaggle answers initialize the same without a valid
+# token (docs/debug_notes.md, 2026-09-27).
 $SSH "su - agent -c '
 export PATH=\$HOME/.local/bin:\$PATH
 TOK=\$(grep ^KAGGLE_API_TOKEN $REMOTE_DIR/.env | cut -d= -f2)
 if [ -n \"\$TOK\" ]; then
     (printf \"%s\n\" \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"method\\\":\\\"initialize\\\",\\\"params\\\":{\\\"protocolVersion\\\":\\\"2024-11-05\\\",\\\"capabilities\\\":{},\\\"clientInfo\\\":{\\\"name\\\":\\\"t\\\",\\\"version\\\":\\\"1\\\"}}}\"; sleep 25) \
-        | timeout 120 npx -y mcp-remote https://www.kaggle.com/mcp --header "Authorization: Bearer \$TOK" 2>/dev/null \
+        | timeout 120 npx -y mcp-remote@0.14.3 https://www.kaggle.com/mcp --header "Authorization: Bearer \$TOK" --disable-cookies 2>/dev/null \
         | grep -m1 -o \"\\\"serverInfo\\\": *{[^}]*}\" && echo \"  kaggle: OK\" || echo \"  kaggle: FAIL\"
 else
     echo \"  kaggle: SKIP (no KAGGLE_API_TOKEN in .env)\"
