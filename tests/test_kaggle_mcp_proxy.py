@@ -69,4 +69,16 @@ finally:
         else:
             os.environ[k] = v
 
+
+# The bridge must not replay the anonymous session cookie Kaggle sets on
+# `initialize`: with it, Kaggle ignores the bearer token and every
+# account-scoped tool returns "Unauthenticated" (docs/debug_notes.md, 2026-09-27).
+from ds_agent.kaggle_mcp import _upstream_params
+
+args = _upstream_params("secret").args
+assert "--disable-cookies" in args, args
+assert args[args.index("--header") + 1] == "Authorization: Bearer secret", args
+assert "mcp-remote@latest" in args, "track the newest mcp-remote, not a cached copy"
+print("mcp-remote bridge sends the bearer token and replays no cookies: OK")
+
 print("\nALL KAGGLE PROXY CHECKS PASSED")

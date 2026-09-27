@@ -65,6 +65,31 @@ def _upstream_env() -> dict[str, str]:
     env.update({k: os.environ[k] for k in _UPSTREAM_PASSTHROUGH_ENV if k in os.environ})
     return env
 
+
+def _upstream_params(token: str) -> StdioServerParameters:
+    """How the `npx mcp-remote` bridge to Kaggle is started.
+
+    `--disable-cookies` is what makes the bearer token count. Kaggle's
+    `initialize` response sets an anonymous web-session cookie
+    (`ka_sessionid`); mcp-remote 0.14 stores cookies a server sets and replays
+    them on every later request, and Kaggle then authenticates by that
+    anonymous session instead of the `Authorization` header -- so every
+    account-scoped tool (quota, notebooks, own datasets) answered
+    "Unauthenticated" while public ones kept working. `@latest` rather than a
+    bare name so `npx` resolves the newest release instead of reusing an older
+    cached copy. See docs/debug_notes.md (2026-09-27).
+    """
+    return StdioServerParameters(
+        command="npx",
+        args=[
+            "-y", "mcp-remote@latest", "https://www.kaggle.com/mcp",
+            "--header", f"Authorization: Bearer {token}",
+            "--disable-cookies",
+        ],
+        env=_upstream_env(),
+    )
+
+
 # Set once, before the CLI-facing server loop starts (see _main) — every
 # handler below just reads this. anyio task groups (used internally by
 # stdio_client/ClientSession) must be entered and exited within the same
@@ -162,14 +187,7 @@ async def _main() -> None:
     global _upstream
     if not KAGGLE_TOKEN:
         raise RuntimeError("KAGGLE_MCP_TOKEN not set — no kaggle BYOK key configured")
-    params = StdioServerParameters(
-        command="npx",
-        args=[
-            "-y", "mcp-remote", "https://www.kaggle.com/mcp",
-            "--header", f"Authorization: Bearer {KAGGLE_TOKEN}",
-        ],
-        env=_upstream_env(),
-    )
+    params = _upstream_params(KAGGLE_TOKEN)
     # The upstream connection and the CLI-facing server loop share this one
     # task for their entire lifetime — required for anyio's task-group-based
     # cleanup (see the _upstream comment above).

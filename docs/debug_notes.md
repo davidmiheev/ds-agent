@@ -1074,6 +1074,43 @@ Takeaway: for third-party API surfaces, a mock-only test is a statement of the
 hypothesis, not evidence. Get one live observation (or mark the claim
 unverified in the PR), and sandbox every test that can write to `$HOME`.
 
+## Kaggle: every account-scoped tool returns "Unauthenticated" behind a valid token (2026-09-27)
+
+Symptom: public Kaggle tools (`search_datasets`, `list_models`, ...) worked,
+but everything tied to the account -- `get_accelerator_quota`, notebook
+sessions, `search_datasets` with `group: "My"` -- answered `Unauthenticated`
+(or an empty result). `mcp__kaggle__authorize` is no way out either: it is not
+supported through `mcp-remote` (it fails with a JSON-RPC schema error).
+
+The token was not the problem. The same `KGAT_...` token authenticates against
+the REST API (`/api/v1/hello` returns the user name) and against
+`https://www.kaggle.com/mcp` itself: `initialize` + `tools/call
+get_accelerator_quota` with plain `curl` and `Authorization: Bearer` returns
+the quota, at protocol versions 2025-03-26, 2025-06-18 and 2025-11-25, and
+with every extra header mcp-remote adds (`Mcp-Method`, `Mcp-Name`,
+`mcp-protocol-version`, `user-agent: undici`, `sec-fetch-mode`).
+
+Root cause, found by relaying mcp-remote's traffic through a logging proxy:
+Kaggle's `initialize` response sets an anonymous web-session cookie
+(`ka_sessionid`). mcp-remote 0.14 keeps cookies a server sets and replays them
+on every later request (its README: "Nothing to configure"). From the second
+request on, Kaggle authenticates by that anonymous session and ignores the
+bearer token -- the `Authorization` header is still sent, which is why
+mcp-remote's own "Using custom headers: Authorization" log looks fine. Against
+a local echo server (no cookies) the header arrives on every request.
+
+Fix: `--disable-cookies` on the bridge, started as `mcp-remote@latest` so npx
+resolves the newest release rather than a cached copy (0.14.3, the latest at
+the time, is the version verified). Verified end to end through `python -m ds_agent.kaggle_mcp`:
+unfixed `main` lists 71 tools and returns `Unauthenticated` for
+`get_accelerator_quota`; the fix lists 71 tools and returns the quota.
+`tests/test_kaggle_mcp_proxy.py` asserts the flag and `@latest`.
+
+Why the deploy check did not catch it: `scripts/deploy_remote.sh` step 5 only
+looks for `serverInfo` in the `initialize` response, which Kaggle answers the
+same with or without a valid token. It now starts the bridge with the same
+flags, but it still checks connectivity, not authentication.
+
 ## Git / network
 
 - **SSH to GitHub fails over IPv6** on this box: `git push` dies with
