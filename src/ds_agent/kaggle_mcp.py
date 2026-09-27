@@ -75,14 +75,14 @@ def _upstream_params(token: str) -> StdioServerParameters:
     them on every later request, and Kaggle then authenticates by that
     anonymous session instead of the `Authorization` header -- so every
     account-scoped tool (quota, notebooks, own datasets) answered
-    "Unauthenticated" while public ones kept working. Pinned to the version
-    this was verified against, since an unpinned `npx` upgrade is how the
-    cookie replay arrived. See docs/debug_notes.md (2026-09-27).
+    "Unauthenticated" while public ones kept working. `@latest` rather than a
+    bare name so `npx` resolves the newest release instead of reusing an older
+    cached copy. See docs/debug_notes.md (2026-09-27).
     """
     return StdioServerParameters(
         command="npx",
         args=[
-            "-y", "mcp-remote@0.14.3", "https://www.kaggle.com/mcp",
+            "-y", "mcp-remote@latest", "https://www.kaggle.com/mcp",
             "--header", f"Authorization: Bearer {token}",
             "--disable-cookies",
         ],

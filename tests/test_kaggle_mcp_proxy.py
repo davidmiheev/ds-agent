@@ -78,7 +78,7 @@ from ds_agent.kaggle_mcp import _upstream_params
 args = _upstream_params("secret").args
 assert "--disable-cookies" in args, args
 assert args[args.index("--header") + 1] == "Authorization: Bearer secret", args
-assert any(a.startswith("mcp-remote@") for a in args), "pin the mcp-remote version"
+assert "mcp-remote@latest" in args, "track the newest mcp-remote, not a cached copy"
 print("mcp-remote bridge sends the bearer token and replays no cookies: OK")
 
 print("\nALL KAGGLE PROXY CHECKS PASSED")

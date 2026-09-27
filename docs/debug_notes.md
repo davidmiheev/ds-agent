@@ -1099,12 +1099,12 @@ bearer token -- the `Authorization` header is still sent, which is why
 mcp-remote's own "Using custom headers: Authorization" log looks fine. Against
 a local echo server (no cookies) the header arrives on every request.
 
-Fix: `--disable-cookies` on the bridge, and `mcp-remote` pinned to 0.14.3 (the
-version verified; an unpinned `npx -y mcp-remote` upgrade is how the cookie
-replay arrived). Verified end to end through `python -m ds_agent.kaggle_mcp`:
+Fix: `--disable-cookies` on the bridge, started as `mcp-remote@latest` so npx
+resolves the newest release rather than a cached copy (0.14.3, the latest at
+the time, is the version verified). Verified end to end through `python -m ds_agent.kaggle_mcp`:
 unfixed `main` lists 71 tools and returns `Unauthenticated` for
 `get_accelerator_quota`; the fix lists 71 tools and returns the quota.
-`tests/test_kaggle_mcp_proxy.py` asserts the flag and the pin.
+`tests/test_kaggle_mcp_proxy.py` asserts the flag and `@latest`.
 
 Why the deploy check did not catch it: `scripts/deploy_remote.sh` step 5 only
 looks for `serverInfo` in the `initialize` response, which Kaggle answers the

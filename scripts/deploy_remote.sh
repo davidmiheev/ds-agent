@@ -191,7 +191,7 @@ export PATH=\$HOME/.local/bin:\$PATH
 TOK=\$(grep ^KAGGLE_API_TOKEN $REMOTE_DIR/.env | cut -d= -f2)
 if [ -n \"\$TOK\" ]; then
     (printf \"%s\n\" \"{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"method\\\":\\\"initialize\\\",\\\"params\\\":{\\\"protocolVersion\\\":\\\"2024-11-05\\\",\\\"capabilities\\\":{},\\\"clientInfo\\\":{\\\"name\\\":\\\"t\\\",\\\"version\\\":\\\"1\\\"}}}\"; sleep 25) \
-        | timeout 120 npx -y mcp-remote@0.14.3 https://www.kaggle.com/mcp --header "Authorization: Bearer \$TOK" --disable-cookies 2>/dev/null \
+        | timeout 120 npx -y mcp-remote@latest https://www.kaggle.com/mcp --header "Authorization: Bearer \$TOK" --disable-cookies 2>/dev/null \
         | grep -m1 -o \"\\\"serverInfo\\\": *{[^}]*}\" && echo \"  kaggle: OK\" || echo \"  kaggle: FAIL\"
 else
     echo \"  kaggle: SKIP (no KAGGLE_API_TOKEN in .env)\"
