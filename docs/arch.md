@@ -13,7 +13,7 @@ flowchart TD
     subgraph Client["Browser Frontend (Zero Build Step)"]
         UI["Web UI (Jinja2 Templates)"]
         HTMX["HTMX + Alpine.js (State & Reactive DOM)"]
-        XTerm["xterm.js (Terminal Log Stream)"]
+        XTerm["Streaming chat client (WebSocket)"]
         ArtExp["Artifact Expander (Inline Plots & Downloads)"]
     end
 
