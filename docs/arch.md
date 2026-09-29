@@ -34,6 +34,7 @@ flowchart TD
     subgraph MCPs["MCP Suite (Child Subprocesses & Remote Bridges)"]
         KaggleMCP["Kaggle Auto-Correcting Proxy (kaggle_mcp.py)\nForwards to https://www.kaggle.com/mcp via mcp-remote\nAuto-fixes save_notebook's Nullable/kernelType footguns"]
         ColabMCP["Google Colab MCP (colab_server.py)\nOAuth Token Cache\nCPU / T4 / L4 / A100 / TPU"]
+        VastMCP["Vast.ai MCP (vast_mcp/server.py)\nBearer API key, SSH-free (REST + poll)\nMarketplace GPU rental, root Docker"]
         DSMCP["Data Science MCP (ds_mcp/server.py)\nds_preview, ds_run, ds_env, ds_install\nDedicated ds-env Python Sandbox"]
         ResearchMCP["Research & Quant MCP (research_mcp/server.py)\narXiv, FRED macro series, PubMed,\nOpenAlex, HuggingFace, UniProt, PDB"]
         MemoryMCP["Cross-Session Memory MCP (agent_mcp.py)\nremember/recall/forget, search_other_sessions"]
@@ -43,6 +44,7 @@ flowchart TD
     subgraph External["External Cloud Compute & Data Providers"]
         KaggleAPI["Kaggle API Services"]
         ColabCloud["Google Colab Cloud Hardware"]
+        VastCloud["Vast.ai GPU Marketplace"]
         FREDAPI["Federal Reserve Economic Data (FRED)"]
         arXivAPI["arXiv / PubMed / Semantic Scholar"]
         LLMGateways["LLM Endpoints\n(OpenRouter / Anthropic / MiniMax)"]
@@ -58,6 +60,7 @@ flowchart TD
     SDK --> CLI
     CLI --> KaggleMCP
     CLI --> ColabMCP
+    CLI --> VastMCP
     CLI --> DSMCP
     CLI --> ResearchMCP
     CLI --> MemoryMCP
@@ -65,6 +68,7 @@ flowchart TD
 
     KaggleMCP --> KaggleAPI
     ColabMCP --> ColabCloud
+    VastMCP --> VastCloud
     ResearchMCP --> FREDAPI
     ResearchMCP --> arXivAPI
     SDK -->|Chat Completions / Streaming| LLMGateways
@@ -232,6 +236,10 @@ ds-agent/
 │   ├── colab_mcp/             # Stdio MCP server wrapping google-colab-cli
 │   │   ├── colab_server.py    # 7 tools: auth, new, status, execute, install, sessions, stop
 │   │   └── setup.sh           # Creates colab_mcp/.venv with google-colab-cli dependencies
+│   ├── vast_mcp/               # Stdio MCP server for Vast.ai GPU rental — stdlib urllib
+│   │   └── server.py           #   REST calls, no dedicated venv (see docs/vast-mcp-plan.md).
+│   │                           #   9 tools: search_offers, new, status, sessions, execute,
+│   │                           #   upload, install, stop, destroy
 │   ├── ds_mcp/                # Dedicated Data Science Environment MCP
 │   │   └── server.py          # 4 tools: ds_preview, ds_run, ds_env, ds_install
 │   └── research_mcp/          # Stdio MCP server, 12 academic/bio/quant search tools

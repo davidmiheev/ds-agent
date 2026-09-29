@@ -1,10 +1,11 @@
 # Plan: Vast.ai MCP (a second, SSH-free compute backend alongside Colab)
 
-> Status: proposal, not implemented. Grounded by downloading and reading the
+> Status: **Phase 1 implemented** (`src/vast_mcp/server.py`, see the PR that
+> added this note). Phases 2-4 (§6) remain proposals, gated on real usage as
+> the Recommendation (§8) describes. Grounded by downloading and reading the
 > real `vastai` PyPI package (v1.7.0, MIT) — `vastai/sdk.py`, `vastai/api/*.py`,
 > and its bundled `SKILL.md` — rather than guessing at the API surface, the
-> same approach used for the `colab_mcp` fixes. See Recommendation at the
-> bottom before implementing.
+> same approach used for the `colab_mcp` fixes.
 
 ## 1. Why add this alongside the existing Colab MCP
 
@@ -77,10 +78,14 @@ pins `cryptography==49.0.0` — which hard-conflicts with this project's own
 resolution; giving it its own venv (à la `colab_mcp`) would work but adds
 real maintenance weight (a second `setup.sh`, a second `.venv` to keep in
 sync) for functionality — HTTP calls with a bearer token — that doesn't
-need it. **Re-implement the handful of endpoints above directly with
-`requests`** (already a transitive dependency via `claude-agent-sdk`), the
-same "thin wrapper, no exotic deps" shape as `ds_mcp`/`agent_mcp`/
-`research_mcp` — no dedicated venv needed at all, unlike `colab_mcp`.
+need it. **Re-implement the handful of endpoints above directly with a
+plain HTTP client** — checked at implementation time: `requests`/`httpx`
+turned out not to actually be present in the main venv either (not a
+transitive dep after all), so this uses stdlib `urllib.request`, the same
+zero-dependency approach `telegram.py`'s `TelegramAPI` already uses in
+this repo for the same kind of bearer-token REST calls. Same "thin
+wrapper, no exotic deps" shape as `ds_mcp`/`agent_mcp`/`research_mcp` —
+no dedicated venv needed at all, unlike `colab_mcp`.
 
 ## 3. Instance lifecycle
 
@@ -173,7 +178,7 @@ not bolted on:
 
 | Phase | Change | Needs SSH? |
 |---|---|---|
-| 1 | `src/vast_mcp/server.py` (new top-level package, main venv, no dedicated venv) implementing `vast_search_offers`/`vast_new`/`vast_status`/`vast_sessions`/`vast_execute`/`vast_install`/`vast_stop`/`vast_destroy` via raw `requests` calls to the endpoints in §2. `vast_upload` limited to small files via base64-over-`execute` (§3). BYOK `vast` provider wired into `mcp.json` as `env: {"VAST_API_KEY": "${VAULT:vast}"}`. Cost-safety per §5. | No |
+| 1 (done) | `src/vast_mcp/server.py` (new top-level package, main venv, no dedicated venv) implementing `vast_search_offers`/`vast_new`/`vast_status`/`vast_sessions`/`vast_execute`/`vast_install`/`vast_stop`/`vast_destroy` via `urllib.request` calls to the endpoints in §2. `vast_upload` limited to small files via base64-over-`execute` (§3). BYOK `vast` provider wired into `mcp.json` as `env: {"VAST_API_KEY": "${VAULT:vast}"}`. Cost-safety per §5. | No |
 | 2 (only if Phase 1's base64 upload proves too slow for real dataset sizes) | Real SCP/SSH-based `vast_upload`/`vast_download` for large files — needs a registered SSH keypair (`create ssh-key`, mirroring `colab_mcp/auth_once.py`'s one-time setup script) and an SSH client dependency (`paramiko`, or shelling out to the system `ssh`/`scp` binary — decide which when this phase is actually justified). | Yes |
 | 3 (speculative) | Idle-timeout watchdog auto-`vast_stop` (§5), spot/bid-price re-bidding when outbid (`update instance --bid_price`, per the SDK's interruptible-pricing notes), volumes for data that should survive a `vast_destroy`. | No |
 
@@ -202,10 +207,11 @@ not bolted on:
 
 ## 8. Recommendation
 
-Ship **Phase 1 only**. It already delivers the full value proposition (real
-marketplace pricing, root Docker access, no OAuth complexity) without
-touching SSH at all, keeps the dependency footprint to plain `requests` in
-the main venv (no second `colab_mcp`-style dedicated venv), and — most
+Ship **Phase 1 only** (done — see status note at the top). It already
+delivers the full value proposition (real marketplace pricing, root Docker
+access, no OAuth complexity) without touching SSH at all, adds zero new
+dependencies to the main venv (no second `colab_mcp`-style dedicated venv),
+and — most
 importantly given §5 — ships with cost-visibility built into `vast_status`
 from day one rather than bolted on later. Hold Phase 2 (SSH/SCP) until
 Phase 1's base64 upload path has actually been hit with a dataset large

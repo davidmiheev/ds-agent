@@ -79,21 +79,28 @@ Current state as of 2026-08-25, right after the repo restructure
   Telegram's upload limit).
 - Fixed `sessions.get_active()` — `telegram.py`'s `/stop` command called it
   but it never existed, so `/stop` always crashed with `AttributeError`.
+- Vast.ai MCP Phase 1 (`src/vast_mcp/server.py`, 7th MCP server): a second,
+  SSH-free compute backend alongside Colab — real GPU marketplace pricing,
+  full root Docker access, single Bearer API key (no OAuth). Grounded by
+  reading the real `vastai` PyPI package source directly rather than
+  depending on it (it pins `cryptography==49.0.0`, conflicting with this
+  project's own `cryptography>=50.0.0`) — re-implemented the ~8 needed
+  endpoints with stdlib `urllib` instead (zero new dependency, same
+  approach `telegram.py`'s `TelegramAPI` already uses). Cost-safety is
+  built into `vast_status`/`vast_new`/`vast_stop`/`vast_destroy` from the
+  start (a running instance bills immediately with no idle timeout by
+  default). See `docs/vast-mcp-plan.md` for the full design and Phases 2-3
+  (SSH/SCP for large files, idle watchdog) still open, gated on real usage.
 
 ## Open
 
 ### High priority
-- [ ] **Vast.ai MCP (second compute backend, alongside Colab)**: no OAuth
-      (static Bearer API key — fits the existing BYOK vault pattern),
-      real marketplace pricing/GPU choice instead of one fixed tier, full
-      root Docker access. Grounded by reading the real `vastai` SDK source
-      directly (don't depend on the PyPI package itself — it pins
-      `cryptography==49.0.0`, which conflicts with this project's own
-      `cryptography>=50.0.0`; re-implement the ~8 endpoints needed with
-      plain `requests` instead, no dedicated venv needed unlike
-      `colab_mcp`). See `docs/vast-mcp-plan.md` for the full design
-      (tool surface, cost-safety requirements — a `running` instance bills
-      immediately with no idle timeout by default — and phasing).
+- [ ] **Vast.ai MCP live verification + Phases 2-3**: Phase 1 shipped (see
+      Done) but has only been tested against mocked HTTP — a first real
+      `vast_new` needs a funded account and explicit go-ahead since it
+      bills the moment an instance reaches `running`. Phases 2-3 (SSH/SCP
+      for large files, idle-timeout watchdog, re-bidding) stay gated on
+      real usage; see `docs/vast-mcp-plan.md`.
 - [ ] **Models the bundled CLI doesn't recognize hang instead of failing
       fast** (`/new <model>` in Telegram, or a raw id typed in the web
       picker) — e.g. `google/gemma-4-31b-it`, a real, current OpenRouter

@@ -46,6 +46,15 @@
         "PYTHONPATH": "${ROOT}/src",
         "KAGGLE_MCP_TOKEN": "${VAULT:kaggle}"
       }
+    },
+    "vast": {
+      "command": "${ROOT}/.venv/bin/python",
+      "args": ["-m", "vast_mcp.server"],
+      "timeout": 60000,
+      "env": {
+        "PYTHONPATH": "${ROOT}/src",
+        "VAST_API_KEY": "${VAULT:vast}"
+      }
     }
   }
 }

@@ -43,6 +43,10 @@ async def _startup_tasks() -> None:
     if kg_key and not crypto.load_key("kaggle"):
         crypto.save_key("kaggle", kg_key, label="Kaggle API Token (env)")
 
+    vast_key = os.environ.get("VAST_API_KEY", "").strip()
+    if vast_key and not crypto.load_key("vast"):
+        crypto.save_key("vast", vast_key, label="Vast.ai API Key (env)")
+
     # Pre-fetch OpenRouter models & pricing into cache
     asyncio.create_task(model_catalog.openrouter_live_models())
 
