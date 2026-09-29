@@ -45,4 +45,40 @@ no_nulls = _nullable_suffixed({"newTitle": "x", "text": None})
 assert "textNullable" not in no_nulls
 print("None values dropped: OK ->", no_nulls)
 
+
+# The upstream `npx mcp-remote` child must inherit proxy/CA settings: the mcp
+# SDK's default child env drops them, which behind a TLS-intercepting proxy
+# made npm fail with SELF_SIGNED_CERT_IN_CHAIN (see docs/debug_notes.md).
+import os
+from ds_agent.kaggle_mcp import _upstream_env
+
+_saved = {k: os.environ.get(k) for k in ("HTTPS_PROXY", "NODE_EXTRA_CA_CERTS", "KAGGLE_MCP_TOKEN")}
+os.environ.update({"HTTPS_PROXY": "http://proxy:3128", "NODE_EXTRA_CA_CERTS": "/ca.crt",
+                   "KAGGLE_MCP_TOKEN": "secret"})
+try:
+    env = _upstream_env()
+    assert env["HTTPS_PROXY"] == "http://proxy:3128", env
+    assert env["NODE_EXTRA_CA_CERTS"] == "/ca.crt", env
+    assert "PATH" in env, "must still include the SDK's safe defaults"
+    assert "KAGGLE_MCP_TOKEN" not in env, "only allow-listed vars are passed through"
+    print("upstream npx env carries proxy/CA vars (and nothing else extra): OK")
+finally:
+    for k, v in _saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
+# The bridge must not replay the anonymous session cookie Kaggle sets on
+# `initialize`: with it, Kaggle ignores the bearer token and every
+# account-scoped tool returns "Unauthenticated" (docs/debug_notes.md, 2026-09-27).
+from ds_agent.kaggle_mcp import _upstream_params
+
+args = _upstream_params("secret").args
+assert "--disable-cookies" in args, args
+assert args[args.index("--header") + 1] == "Authorization: Bearer secret", args
+assert "mcp-remote@latest" in args, "track the newest mcp-remote, not a cached copy"
+print("mcp-remote bridge sends the bearer token and replays no cookies: OK")
+
 print("\nALL KAGGLE PROXY CHECKS PASSED")
