@@ -1,11 +1,12 @@
 # TODO
 
-Current state as of 2026-08-25, right after the repo restructure
-(tests → `tests/`, sources → `src/`, docs → `docs/`, `scripts/run_server.sh`).
+Running checklist. Last restructured 2026-08-25 (tests → `tests/`, sources → `src/`,
+docs → `docs/`, `scripts/run_server.sh`). For the ranked, cross-cutting view of
+what to do next, see `docs/roadmap.md`.
 
 ## Done ✅
 
-- FastAPI web UI (chat + terminal + session sidebar + file browser), no build step
+- FastAPI web UI (chat + session sidebar + file browser), no build step
 - BYOK key storage (Fernet-encrypted via `APP_PASSWORD`, plaintext fallback)
 - Provider env injection (Anthropic / OpenRouter / generic gateway)
 - Per-session `.mcp.json` composition with `${VAULT:...}` resolution
@@ -106,6 +107,9 @@ Current state as of 2026-08-25, right after the repo restructure
       valid there) — needs either an SDK/CLI version bump or a
       session-creation-time smoke-test query with a short timeout so a
       CLI-incompatible id is caught and reported in seconds.
+      **Update**: gemma-4-31b-it itself worked after the SDK/CLI upgrade
+      (debug_notes 2026-09-06), so this is now a hardening item for future
+      newer models, not a confirmed live hang (`docs/roadmap.md` P1).
 - [x] `deploy/Caddyfile` was referenced in README but missing — recreated
       during the restructure (reverse proxy → 127.0.0.1:8765).
 - [ ] **`SESSION_BACKEND=docker` is declared in `core.py` but not implemented** —

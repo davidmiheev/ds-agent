@@ -18,7 +18,7 @@
 - **Session Export**: download any session's messages + artifacts as a zip — a button in the web UI's chat header, or `/export` in Telegram.
 - **Inline Artifact Rendering**: Matplotlib figures, Seaborn charts, and Plotly visualizations render inline immediately. CSVs, Parquet files, JSON data, and Markdown reports surface as one-click downloads.
 - **Token Economy & Prompt Caching**: Real-time cost calculation, cache hit tracking (`cache_read_tokens`), automated context compaction, and output trimming.
-- **Zero-Build Web UI**: Clean, responsive interface featuring streaming chat, live tool inspection, an embedded xterm.js terminal, dataset uploader (up to 2 GB), and workspace file browser.
+- **Zero-Build Web UI**: Clean, responsive interface featuring streaming chat, live tool inspection, dataset uploader (up to 2 GB), and workspace file browser.
 
 ---
 
@@ -27,7 +27,7 @@
 ```
                                   ┌──────────────────────────────┐
                                   │      Web Browser UI          │
-                                  │ (HTMX + Alpine.js + xterm.js)│
+                                  │    (HTMX + Alpine.js)        │
                                   └──────────────┬───────────────┘
                                                  │
                                                  │ WebSocket / HTTP (:8765)
@@ -319,7 +319,7 @@ ds-agent/
 │   │   ├── agent_prompt.py   # Data science & quant system prompt & artifact guidelines
 │   │   ├── model_catalog.py  # Model registry & live OpenRouter catalog fetcher
 │   │   ├── templates/        # Jinja2 HTML templates
-│   │   └── static/           # Client-side JavaScript (HTMX, Alpine, xterm, artifacts)
+│   │   └── static/           # Client-side JavaScript (HTMX, Alpine, artifacts)
 │   │
 │   ├── colab_mcp/            # Google Colab MCP server
 │   │   ├── colab_server.py   # stdio MCP server wrapping google-colab-cli
