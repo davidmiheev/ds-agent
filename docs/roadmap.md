@@ -46,24 +46,52 @@ capability, then polish.
    still hang a first turn for the full 5-minute watchdog. A cheap
    session-creation smoke query with a short timeout would report it in
    seconds.
-7. **Observability.** Today the only signals are unstructured stderr logs
-   (read via `journalctl`), a `/healthz` that returns `{"ok": true}` without
-   checking anything, and `session_usage`, which keeps only the *last* turn's
-   usage per session. Several past incidents were found by hand: a dead MCP
+7. **Observability**, in two halves.
+
+   *System health.* Today the only signals are unstructured stderr logs (read
+   via `journalctl`) and a `/healthz` that returns `{"ok": true}` without
+   checking anything. Several past incidents were found by hand: a dead MCP
    child that stayed dead for the life of its CLI process, hung model calls,
-   and Telegram sends lost to transient network errors. Proposed, in order:
+   and Telegram sends lost to transient network errors.
    1. Structured (JSON) logs with `session_id`, `turn_id`, tool name and
       duration on every tool call and watchdog/respawn event.
    2. A real `/healthz`: DB reachable, Telegram poller alive, and per-session
       MCP child liveness (the exact gap behind the dead-`memory`/`kaggle`
       incidents).
-   3. Usage history, not just last turn: an append-only `turn_usage` table so
-      cost per session, per model and per day can be queried and shown in the
-      UI.
-   4. Alerts to the existing Telegram bot on watchdog fires, respawns, MCP
+   3. Alerts to the existing Telegram bot on watchdog fires, respawns, MCP
       child death, and budget-cap hits.
-   5. Optional: OpenTelemetry traces or a Prometheus `/metrics` endpoint, only
-      if a collector actually exists; the first four need no new infrastructure.
+
+   *LLM observability.* What exists: `sessions._record_result_usage` captures
+   per-turn input/output/cache tokens, a cost computed from catalog pricing
+   (falling back to the SDK's number), `duration_ms` and per-model usage. The
+   gaps:
+   4. **History.** `db.record_usage` upserts one row per session, so only the
+      last turn survives. Make it an append-only `turn_usage` table keyed by
+      session, turn, model and provider, so cost and cache hit rate can be
+      queried per session, model, provider and day, and shown in the UI
+      (spend today, spend by model, cache hit trend).
+   5. **Latency and failures.** Only whole-turn `duration_ms` is kept. Add
+      time-to-first-token, per-request latency, HTTP status, retries and
+      rate-limit hits per provider, and tool-call success/error counts. This
+      is the data that would have flagged the hung OpenRouter calls and the
+      unrecognized-model hang before a user did.
+   6. **Cost correctness.** The pricing fallback is silent: when a model has
+      no catalog price the SDK's figure is used, and that figure was wrong for
+      non-Anthropic models before. Log when the fallback fires and surface
+      "cost may be inexact" instead of presenting it as fact.
+   7. **Prompt/response tracing.** Transcripts are on disk per CLI process but
+      carry no result entries, and nothing links a turn to its tool calls and
+      cost. One low-intrusion option: a small local proxy between the CLI and
+      the provider (`ANTHROPIC_BASE_URL` already points wherever
+      `providers.env_for` says, and `kaggle_mcp.py` already proves the
+      proxy-in-the-middle pattern here) that records exact token counts,
+      latency and status for every request without changing the CLI. Design it
+      so that prompt/response bodies are opt-in, redacted, and retention
+      limited, and so auth headers are never written down.
+   8. **Optional exporters.** Langfuse or Helicone for a ready-made trace UI,
+      or OpenTelemetry (GenAI semantic conventions) and a Prometheus
+      `/metrics` endpoint, only if a collector actually exists. Items 1-7 need
+      no new infrastructure and should land first.
 8. **Market data MCP** (`yfinance` or Polygon/Alpaca/Tiingo). Biggest
    capability gap for the quant use case; FRED and econometrics already exist.
 9. **SEC EDGAR filings and transcripts** in `research_mcp`.
