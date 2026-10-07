@@ -1,7 +1,7 @@
 # Roadmap: prioritized work queue
 
 Snapshot as of 2026-09-29 (extended 2026-10-07 with observability, Modal and
-DeepInfra), built from a review of the code, `docs/*`, and the
+DeepInfra compute), built from a review of the code, `docs/*`, and the
 GitHub PR list. `docs/todo.md` remains the running checklist; this is the
 ranked view across it, the plan docs, and problems found in the review.
 Priority reflects impact on safety and correctness first, then agent
@@ -79,14 +79,18 @@ capability, then polish.
     cost model differs (per-second billing, no idle instance to forget, but
     function timeouts and cold starts); and whether the SDK's dependencies
     conflict with this project's pins, as `vastai` did with `cryptography`.
-12. **DeepInfra as an LLM provider.** `providers.py` already has a generic
-    gateway path (`ANTHROPIC_BASE_URL` plus an auth token), but the Claude
-    CLI speaks the Anthropic Messages API. Spike first: confirm whether
-    DeepInfra exposes an Anthropic-compatible endpoint. If it only offers
-    OpenAI-compatible endpoints, this needs a translation proxy, which is a
-    larger change than a new provider entry. Either way it also needs a
-    `model_catalog` source (live catalog or a curated list) and a check that
-    its models handle tool calls well enough for the agent loop.
+12. **DeepInfra as a compute backend** (`docs/deepinfra-mcp-plan.md`). Two
+    separate products, researched from DeepInfra's own docs:
+    - **Sandboxes**: CPU microVMs with a streamed exec API (up to 30 min per
+      command), `/workspace` file transfer, per-second billing and a built-in
+      idle timeout. Plain HTTP and one bearer key, so no SSH and no new
+      dependency. Do this first; it also gives the agent an isolated place to
+      run model-written code, which is what P0 item 2 (public mode) lacks.
+    - **GPU Instances**: B200/B300 only, billed hourly, SSH-only access, no
+      documented idle guard. Defer until a training workload needs it.
+    Open question to confirm first: whether sandboxes can see a GPU at all.
+    Separately, DeepInfra as an *LLM provider* now looks feasible (its spec
+    advertises Anthropic-compatible chat completions) but is not in scope here.
 13. **Turn correlation for overlapping web + Telegram turns.** Known remaining
     limitation in `docs/debug_notes.md` (a subscriber can misattribute the
     tail of another interface's in-flight turn). Narrow window, but it is a
