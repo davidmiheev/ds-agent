@@ -303,8 +303,12 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="colab_stop",
-            description="Release the active Colab runtime.",
-            inputSchema={"type": "object", "properties": {}},
+            description=("Release the active Colab runtime (unassigns it on Colab's side). "
+                         "Pass `endpoint` (from colab_sessions) to release any runtime on the "
+                         "account, e.g. one left over from an earlier server process."),
+            inputSchema={"type": "object", "properties": {
+                "endpoint": {"type": "string", "description": "Runtime endpoint to release"},
+            }},
         ),
         types.Tool(
             name="colab_sessions",
@@ -647,7 +651,18 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
             return await call_tool("colab_execute", {"code": code, "timeout": 300})
 
         if name == "colab_stop":
+            endpoint = arguments.get("endpoint")
             s = _active_session()
+            if endpoint and (s is None or s.endpoint != endpoint):
+                # A runtime this process does not track: release it on Colab's side
+                # and drop any local record of it.
+                _get_client().unassign(endpoint)
+                for sname, st in list(_state["store"].list().items()):
+                    if st.endpoint == endpoint:
+                        _state["store"].remove(sname)
+                return [types.TextContent(type="text", text=json.dumps({
+                    "status": "released", "endpoint": endpoint
+                }))]
             if s is None:
                 return [types.TextContent(type="text", text="No active session.")]
             try:
@@ -656,6 +671,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                         _state["runtime"].kernel_client.stop()
                     except Exception:
                         pass
+                # Without unassign the VM stays allocated to the account (and keeps
+                # using quota) after the local record is gone; `colab session stop`
+                # in google-colab-cli does the same.
+                _get_client().unassign(s.endpoint)
                 _state["store"].remove(s.name)
             except Exception as e:
                 return [types.TextContent(type="text", text=f"Error stopping: {e}")]

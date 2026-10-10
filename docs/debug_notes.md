@@ -1111,6 +1111,37 @@ looks for `serverInfo` in the `initialize` response, which Kaggle answers the
 same with or without a valid token. It now starts the bridge with the same
 flags, but it still checks connectivity, not authentication.
 
+## colab_stop left the runtime assigned to the account (2026-10-10)
+
+Symptom: `colab_stop` returned `"stopped"`, but `colab_sessions` (which calls
+`list_assignments()`) still listed the runtime, and it kept using quota.
+
+Root cause: the handler only stopped the kernel client and removed the session
+from the local `StateStore`; it never called `Client.unassign(endpoint)`.
+google-colab-cli's own `session stop` (`commands/session.py`, `stop()`) calls
+`state.client.unassign(s.endpoint)` before removing local state.
+
+Fix (`src/colab_mcp/colab_server.py`):
+- `colab_stop` calls `_get_client().unassign(s.endpoint)` before
+  `_state["store"].remove(s.name)`. If `unassign` raises, the usual
+  `Error stopping: ...` is returned and the local record is kept, so a runtime
+  that is still assigned is never forgotten.
+- New optional `endpoint` argument. When it is given and is not the active
+  session's endpoint, the tool calls `unassign(endpoint)`, drops any local store
+  entry with that endpoint and returns `{"status": "released", "endpoint": ...}`.
+  This releases a runtime a previous MCP server process left behind (the
+  in-process `_state` is lost on restart); take the endpoint from `colab_sessions`.
+
+Test: `tests/test_colab_stop.py` (mocked client and fake store; asserts `unassign`
+is called with the session endpoint on a plain stop and with the given endpoint in
+the `endpoint` form). It redirects the token paths to a temp dir and asserts the
+real `~/.config/colab-cli/token.json` is byte-identical afterwards (see the
+2026-09-24 entry). Unit tests check the code only; the live check is
+`colab_new` -> `colab_stop` -> `colab_sessions` returning an empty list.
+
+The same fix was applied and verified live in davidmiheev/phh_strategy
+(`tools/mcp/colab_mcp/colab_server.py`, commit c0ede24).
+
 ## Git / network
 
 - **SSH to GitHub fails over IPv6** on this box: `git push` dies with
