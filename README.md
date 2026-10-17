@@ -64,6 +64,7 @@ Connects directly to Kaggle's official remote MCP at `https://www.kaggle.com/mcp
 - Search and download competition files and test sets.
 - Query community datasets and pull metadata or CSVs.
 - Explore model weights and benchmark leaderboards.
+- Run long jobs as **batches** of notebooks (`batch_create`, `batch_step`, `batch_status`, `batch_retry`, `batch_cancel`): at most 5 running at once across batches, outputs downloaded and logs checked for done / fail / deadline markers. See [`docs/kaggle-batch.md`](docs/kaggle-batch.md).
 
 **Setup**:
 1. Generate an API token on [Kaggle](https://www.kaggle.com) (Settings → *Create New Token*, starts with `KGAT…`).
