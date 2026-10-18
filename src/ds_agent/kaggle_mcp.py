@@ -107,63 +107,47 @@ async def _ensure_upstream() -> ClientSession:
 
 
 # ---- request auto-correction for known-tricky tools ----
+# The fixers live in kaggle_requests.py (shared with the batch runner's
+# command-line clients, which run without the `mcp` package); the names are
+# re-exported here for existing imports.
+try:  # package import (ds-agent: python -m ds_agent.kaggle_mcp)
+    from . import kaggle_batch
+    from .kaggle_requests import _REQUEST_FIXERS, _fix_save_notebook, _nullable_suffixed
+except ImportError:  # flat import (a vendored copy run as a script)
+    import kaggle_batch  # type: ignore[no-redef]
+    from kaggle_requests import _REQUEST_FIXERS, _fix_save_notebook, _nullable_suffixed  # type: ignore[no-redef]
 
-_KERNEL_TYPES = {"script", "notebook"}
-_LANGUAGES = {"python", "r", "rmarkdown"}
-
-
-def _nullable_suffixed(request: dict[str, Any]) -> dict[str, Any]:
-    """Rewrite plain field names to their `Nullable`-suffixed counterparts.
-
-    `hasXNullable`/`hasX`-style boolean flags and already-suffixed keys are
-    passed through unchanged; `None` values are dropped (Kaggle's schema
-    treats an omitted field and an explicit null the same way).
-    """
-    out: dict[str, Any] = {}
-    for k, v in request.items():
-        if v is None:
-            continue
-        if k.endswith("Nullable") or k.startswith("has"):
-            out[k] = v
-        else:
-            out[f"{k}Nullable"] = v
-    return out
-
-
-def _fix_save_notebook(request: dict[str, Any]) -> dict[str, Any]:
-    req = _nullable_suffixed(request)
-    kernel_type = req.get("kernelTypeNullable")
-    language = req.get("languageNullable")
-    if isinstance(kernel_type, str) and kernel_type.lower() in _LANGUAGES and kernel_type.lower() not in _KERNEL_TYPES:
-        # A language name landed in kernelType (the single most common
-        # mistake here) — recover it as the language if language itself
-        # wasn't already set to something sensible, then fix kernelType.
-        if not isinstance(language, str) or language.lower() not in _LANGUAGES:
-            req["languageNullable"] = kernel_type.lower()
-        req["kernelTypeNullable"] = "script"
-    elif kernel_type is None:
-        req["kernelTypeNullable"] = "script"
-    if not isinstance(req.get("languageNullable"), str) or req["languageNullable"].lower() not in _LANGUAGES:
-        req["languageNullable"] = "python"
-    return req
-
-
-# Tool name -> function that rewrites its `request` argument before forwarding.
-_REQUEST_FIXERS = {
-    "save_notebook": _fix_save_notebook,
-}
+__all__ = ["_REQUEST_FIXERS", "_fix_save_notebook", "_nullable_suffixed", "kaggle_batch"]
 
 
 async def _on_list_tools(ctx: Any, params: Any) -> types.ListToolsResult:
     session = await _ensure_upstream()
     result = await session.list_tools()
-    return types.ListToolsResult(tools=result.tools)
+    # Kaggle's live tools verbatim, plus the local batch runner's (kaggle_batch.py).
+    local = [types.Tool(name=t["name"], description=t["description"], input_schema=t["input_schema"])
+             for t in kaggle_batch.TOOLS]
+    return types.ListToolsResult(tools=list(result.tools) + local)
+
+
+def _text_result(payload: Any, is_error: bool = False) -> types.CallToolResult:
+    import json
+
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=json.dumps(payload, indent=1, default=str))],
+        is_error=is_error,
+    )
 
 
 async def _on_call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.CallToolResult:
     session = await _ensure_upstream()
     name = params.name
     arguments = dict(params.arguments or {})
+
+    if name in kaggle_batch.TOOL_NAMES:  # local tools: the batch runner, on top of upstream calls
+        try:
+            return _text_result(await kaggle_batch.dispatch(name, arguments, session.call_tool))
+        except (kaggle_batch.BatchError, kaggle_batch.KaggleToolError, KeyError) as exc:
+            return _text_result({"error": f"{type(exc).__name__}: {exc}"}, is_error=True)
 
     fixer = _REQUEST_FIXERS.get(name)
     if fixer and isinstance(arguments.get("request"), dict):
