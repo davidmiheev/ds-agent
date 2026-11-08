@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -95,6 +96,7 @@ def get_active(sid: str) -> ActiveSession | None:
 
 
 def delete(sid: str) -> None:
+    row = db.get_session(sid)
     if sid in _active:
         try:
             asyncio.create_task(_active[sid].client.disconnect())
@@ -103,10 +105,10 @@ def delete(sid: str) -> None:
         _active.pop(sid, None)
     db.delete_session(sid)
     # best-effort wipe of workspace + transcript
-    row = db.get_session(sid)
     if row:
         import shutil
-        for p in (Path(row["workspace"]), core.DATA_DIR / "sessions" / sid):
+        workspace = Path(row["workspace"])
+        for p in (workspace, core.DATA_DIR / "sessions" / sid, _transcript_dir(workspace)):
             if p.exists():
                 shutil.rmtree(p, ignore_errors=True)
 
@@ -186,6 +188,11 @@ def _has_transcript(sid: str) -> bool:
     return p.exists() and p.stat().st_size > 0
 
 
+def _transcript_dir(workspace: Path) -> Path:
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", str(workspace))
+    return Path.home() / ".claude" / "projects" / slug
+
+
 def _latest_transcript(workspace: Path) -> Path | None:
     """Find the most recent SDK transcript for this session's workspace.
 
@@ -194,9 +201,7 @@ def _latest_transcript(workspace: Path) -> Path | None:
     '-'>/<uuid>.jsonl — one file per CLI process. The newest mtime is the
     current conversation.
     """
-    import re as _re
-    slug = _re.sub(r"[^a-zA-Z0-9]", "-", str(workspace))
-    proj = Path.home() / ".claude" / "projects" / slug
+    proj = _transcript_dir(workspace)
     if not proj.is_dir():
         return None
     files = [p for p in proj.glob("*.jsonl") if p.stat().st_size > 0]

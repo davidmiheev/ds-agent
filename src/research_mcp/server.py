@@ -294,10 +294,6 @@ def pdb_search(query: str, limit: int = 10) -> list[dict]:
         "return_type": "entry",
         "request_options": {"paginate": {"start": 0, "rows": int(limit)}},
     }
-    try:
-        d = _http_json("https://search.rcsb.org/rcsbsearch/v2/query", timeout=15.0)
-    except Exception as e:
-        return [{"error": f"pdb failed: {e}"}]
     # the real API needs POST JSON; we use the GET form
     url = f"https://search.rcsb.org/rcsbsearch/v2/query?json={urllib.parse.quote(json.dumps(payload))}"
     try:
