@@ -5,7 +5,8 @@ Runs in background alongside FastAPI when TELEGRAM_BOT_TOKEN is set in .env.
 
 Configuration in .env:
   TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
-  TELEGRAM_ALLOWED_USERS="12345678,87654321"   # Optional whitelist of Telegram user IDs
+  TELEGRAM_ALLOWED_USERS="12345678,87654321"   # Whitelist; empty denies everyone
+  TELEGRAM_ALLOW_ALL_USERS=0                 # Explicit opt-in for an empty whitelist
 
 Features:
 - /start, /help - Welcome and usage instructions
@@ -42,6 +43,7 @@ TELEGRAM_ALLOWED_USERS = [
     for uid in os.environ.get("TELEGRAM_ALLOWED_USERS", "").split(",")
     if uid.strip().isdigit()
 ]
+TELEGRAM_ALLOW_ALL_USERS = os.environ.get("TELEGRAM_ALLOW_ALL_USERS", "0") == "1"
 # Chat that receives web-login one-time codes (see otp_chat_id() below).
 TELEGRAM_OTP_CHAT_ID = os.environ.get("TELEGRAM_OTP_CHAT_ID", "").strip()
 
@@ -53,6 +55,14 @@ _chat_preferred_provider: dict[int, str] = {}
 
 def is_configured() -> bool:
     return bool(TELEGRAM_BOT_TOKEN)
+
+
+def _user_allowed(user_id: int | None) -> bool:
+    if user_id is None:
+        return False
+    if TELEGRAM_ALLOWED_USERS:
+        return user_id in TELEGRAM_ALLOWED_USERS
+    return TELEGRAM_ALLOW_ALL_USERS
 
 
 def markdown_to_telegram_html(text: str) -> str:
@@ -721,7 +731,7 @@ async def _handle_callback_query(api: TelegramAPI, cb: dict) -> None:
         return
 
     # Access control
-    if TELEGRAM_ALLOWED_USERS and user_id not in TELEGRAM_ALLOWED_USERS:
+    if not _user_allowed(user_id):
         await api.answer_callback_query(cb_id, "⛔ Access denied.")
         return
 
@@ -811,6 +821,9 @@ async def run_bot_polling() -> None:
         return
 
     logger.info("Starting Telegram bot long-polling...")
+    if not TELEGRAM_ALLOWED_USERS and not TELEGRAM_ALLOW_ALL_USERS:
+        logger.warning("TELEGRAM_ALLOWED_USERS is empty; all Telegram users are denied. "
+                       "Set an allowlist or explicitly opt in with TELEGRAM_ALLOW_ALL_USERS=1.")
     api = TelegramAPI(TELEGRAM_BOT_TOKEN)
     offset = 0
 
@@ -849,7 +862,7 @@ async def run_bot_polling() -> None:
                     continue
 
                 # Access control check
-                if TELEGRAM_ALLOWED_USERS and user_id not in TELEGRAM_ALLOWED_USERS:
+                if not _user_allowed(user_id):
                     await api.send_message(
                         chat_id,
                         f"⛔ Access denied. Your Telegram user ID is `{user_id}`. Add it to `TELEGRAM_ALLOWED_USERS`."

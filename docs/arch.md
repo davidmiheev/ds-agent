@@ -338,7 +338,9 @@ bash scripts/deploy_remote.sh <REMOTE_IP> <PATH_TO_SSH_KEY>
    (pinned `mcp[cli]<2`) built by `src/colab_mcp/setup.sh`.
 5. **`APP_PUBLIC` and TLS.** `APP_PUBLIC=1` sets `Secure` cookies, so it only
    works behind TLS (Caddy + real domain, see `deploy/Caddyfile`). On a raw IP
-   without TLS keep `APP_PUBLIC=0`.
+   without TLS keep `APP_PUBLIC=0`. Public mode refuses to start unless a
+   password or Telegram OTP login is configured. An empty Telegram allowlist
+   denies everyone unless `TELEGRAM_ALLOW_ALL_USERS=1` explicitly opts in.
 6. **Login brute-force defense.** `POST /login` is rate-limited per client IP
    (5 failures/hour → 429). The counter is in-memory and resets on service
    restart; the IP is taken from `X-Forwarded-For` when behind a proxy.

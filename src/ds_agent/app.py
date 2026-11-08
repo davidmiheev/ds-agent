@@ -22,6 +22,8 @@ _telegram_task: asyncio.Task | None = None
 @app.on_event("startup")
 async def _startup_tasks() -> None:
     """Seed BYOK keys and launch background workers."""
+    if core.APP_PUBLIC and not _auth_required():
+        raise RuntimeError("APP_PUBLIC=1 requires APP_PASSWORD or configured Telegram OTP login")
     import os
     or_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if or_key and not crypto.load_key("openrouter"):
@@ -466,7 +468,7 @@ async def read_file(sid: str, path: str):
         raise HTTPException(404, "no such session")
     full = (Path(row["workspace"]) / path).resolve()
     ws_root = Path(row["workspace"]).resolve()
-    if not str(full).startswith(str(ws_root)):
+    if not full.is_relative_to(ws_root):
         raise HTTPException(403, "path escapes workspace")
     if not full.exists() or not full.is_file():
         raise HTTPException(404, "no such file")

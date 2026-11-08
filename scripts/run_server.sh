@@ -130,7 +130,11 @@ _free_port "$PORT"
 echo "==> ds-agent server"
 echo "    url:      http://$HOST:$PORT"
 echo "    data dir: $CODING_AGENT_HOME"
-echo "    password: ${APP_PASSWORD:+set}${APP_PASSWORD:-<none — no-password mode>}"
+if [ -n "$APP_PASSWORD" ]; then
+    echo "    password: set"
+else
+    echo "    password: <none — no-password mode>"
+fi
 echo "    public:   $APP_PUBLIC   backend: $SESSION_BACKEND   budget: \$${MAX_BUDGET_USD}"
 
 # Prefer the project venv directly (works offline); fall back to `uv run`,

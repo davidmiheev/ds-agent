@@ -171,8 +171,10 @@ or public webhook needed.
 2. Add to `.env`:
    ```bash
    TELEGRAM_BOT_TOKEN="123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
-   # Optional whitelist of Telegram user IDs (comma-separated); if unset, anyone can use the bot
+   # Required whitelist of Telegram user IDs (comma-separated); empty denies everyone
    TELEGRAM_ALLOWED_USERS="12345678,87654321"
+   # Unsafe opt-in to allow anyone when the whitelist is empty:
+   TELEGRAM_ALLOW_ALL_USERS=0
    ```
 3. Start the server (`bash scripts/run_server.sh`) and message your bot on Telegram — an unauthorized user gets their numeric ID back in the denial message, handy for populating `TELEGRAM_ALLOWED_USERS`.
 
@@ -449,3 +451,4 @@ bash scripts/run_server.sh
 
 > ⚠️ `APP_PUBLIC=1` sets `Secure` cookies, so it only works behind TLS (e.g. Caddy
 > with a real domain). On a raw IP without TLS keep `APP_PUBLIC=0`.
+> Public mode refuses to start unless `APP_PASSWORD` or Telegram OTP login is configured.
