@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -139,6 +140,59 @@ async def test_upload_transport_failure():
     assert old.closed and cs._state["runtime"] is None
 
 
+async def test_dead_and_restarting_kernels():
+    for state in ("dead", "restarting"):
+        reset()
+        saved = []
+        cs._state["store"].add = lambda s: saved.append((s.kernel_id, s.session_id))
+        FakeRuntime.failure = RuntimeError(f"Kernel {state} before the code finished.")
+        result = await cs.call_tool("colab_execute", {"code": "side_effect()"})
+        old = FakeRuntime.instances[0]
+        assert old.closed and cs._state["runtime"] is None
+        assert sum(code == "side_effect()" for code, _ in old.calls) == 1
+        FakeRuntime.failure = None
+        await cs.call_tool("colab_execute", {"code": "next_call"})
+        ids = FakeRuntime.instances[-1].ids
+        if state == "dead":
+            assert ids["kernel_id"] is None and ids["session_id"] is None
+            assert saved == [(None, None)]
+            assert "state was lost" in result[0].text and "fresh kernel" in result[0].text
+        else:
+            assert ids["kernel_id"] == "same-kernel" and ids["session_id"] == "same-session"
+            assert not saved and "state was lost" not in result[0].text
+
+
+async def test_proxy_auth_refresh_only_for_proxy_urls():
+    for status in (401, 403):
+        for url, refresh in (("https://fake/proxy/api/kernels", True),
+                             ("https://fake/proxy", True),
+                             ("https://fake/proxy-other", False),
+                             ("https://fake/control-plane", False),
+                             ("https://oauth.example/token", False), (None, False)):
+            reset()
+            s = cs._state["active_session"]
+            s.url = "https://fake/proxy/"
+            notebook_hash = uuid.UUID(int=42)
+            cs._state["notebook_hash"] = notebook_hash
+            deadline = cs._state["runtime_token_expires_at"]
+            response = cs.requests.Response()
+            response.status_code, response.url = status, url
+            FakeRuntime.failure = cs.requests.HTTPError("rejected", response=response)
+            await cs.call_tool("colab_execute", {"code": "side_effect()"})
+            assert cs._state["runtime"] is None
+            assert cs._state["runtime_token_expires_at"] == (None if refresh else deadline)
+            assigned = []
+            def assign(hash_value, **kwargs):
+                assigned.append(hash_value)
+                return SimpleNamespace(runtime_proxy_info=SimpleNamespace(
+                    token="fresh", url=s.url, token_expires_in_seconds=3600))
+            FakeRuntime.failure = None
+            with patch.object(cs, "_get_client", return_value=SimpleNamespace(assign=assign)):
+                await cs.call_tool("colab_execute", {"code": "next_call"})
+            assert assigned == ([notebook_hash] if refresh else [])
+            assert FakeRuntime.instances[-1].ids["kernel_id"] == "same-kernel"
+
+
 async def test_runtime_operations_are_serialized():
     reset()
     execute = asyncio.create_task(cs.call_tool("colab_execute", {"code": "slow"}))
@@ -160,7 +214,8 @@ async def main():
         for test in (test_status_and_sessions_during_execute, test_failed_warmup_retries,
                      test_transport_failure_reconnects_without_replay,
                      test_user_error_keeps_runtime, test_refresh_closes_old_runtime,
-                     test_upload_transport_failure, test_runtime_operations_are_serialized):
+                     test_upload_transport_failure, test_runtime_operations_are_serialized,
+                     test_dead_and_restarting_kernels, test_proxy_auth_refresh_only_for_proxy_urls):
             await test()
             print(f"{test.__name__}: OK")
 

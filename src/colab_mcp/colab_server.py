@@ -28,6 +28,7 @@ import sys
 import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Optional
 
@@ -220,7 +221,25 @@ def _is_transport_error(error: Exception) -> bool:
         "IOPub channel must be running to receive output",
         "stdin channel must be running to allow input",
         "Kernel died before replying to kernel_info",
+        "Kernel dead before the code finished.",
+        "Kernel restarting before the code finished.",
     }
+
+
+def _is_proxy_auth_error(error: Exception) -> bool:
+    if not isinstance(error, requests.HTTPError) or error.response is None:
+        return False
+    if error.response.status_code not in (401, 403):
+        return False
+    session = _state["active_session"]
+    if session is None or not error.response.url:
+        return False
+    proxy = urlsplit(session.url)
+    response = urlsplit(error.response.url)
+    prefix = proxy.path.rstrip("/")
+    return bool(proxy.netloc) and (proxy.scheme, proxy.netloc) == (response.scheme, response.netloc) and (
+        response.path == prefix or response.path.startswith(prefix + "/")
+    )
 
 
 def _active_runtime() -> ColabRuntime:
@@ -722,8 +741,17 @@ def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
 
         return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
+        state_lost = False
         if name in {"colab_execute", "colab_upload"} and _is_transport_error(e):
+            if _is_proxy_auth_error(e):
+                _state["runtime_token_expires_at"] = None
             _drop_runtime()
+            if isinstance(e, RuntimeError) and str(e) == "Kernel dead before the code finished.":
+                s = _state["active_session"]
+                if s is not None:
+                    s.kernel_id = s.session_id = None
+                    _state["store"].add(s)
+                    state_lost = True
         import traceback
         tb = traceback.format_exc()
         # If it's a credential error, hint at the auth flow. Don't mistake
@@ -751,7 +779,8 @@ def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                 )]
             except Exception:
                 pass
-        return [types.TextContent(type="text", text=f"Error: {e}\n\n{tb}")]
+        note = " Kernel state was lost; the next call will start a fresh kernel." if state_lost else ""
+        return [types.TextContent(type="text", text=f"Error: {e}{note}\n\n{tb}")]
 
 
 async def main():
