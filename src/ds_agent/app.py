@@ -353,7 +353,7 @@ async def get_session(sid: str):
 
 @app.delete("/v1/sessions/{sid}")
 async def delete_session(sid: str):
-    sessions.delete(sid)
+    await sessions.delete(sid)
     return {"ok": True}
 
 

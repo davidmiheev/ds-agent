@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ from .trim import trim_tool_result_blocks
 # Each WebSocket connection borrows the client, but only one WS is allowed at a time.
 _active: dict[str, "ActiveSession"] = {}
 _active_locks: dict[str, asyncio.Lock] = {}
+_DELETE_TIMEOUT_S = 10
 
 
 def _new_set_event() -> asyncio.Event:
@@ -56,6 +58,7 @@ class ActiveSession:
     # "simultaneous web UI + Telegram" incident.
     _engine_task: asyncio.Task | None = field(default=None, repr=False)
     _subscribers: list[asyncio.Queue] = field(default_factory=list, repr=False)
+    closing: bool = False
 
 
 def _new_id() -> str:
@@ -94,21 +97,30 @@ def get_active(sid: str) -> ActiveSession | None:
     return _active.get(sid)
 
 
-def delete(sid: str) -> None:
-    if sid in _active:
-        try:
-            asyncio.create_task(_active[sid].client.disconnect())
-        except Exception:
-            pass
+async def delete(sid: str) -> None:
+    async with _active_locks.setdefault(sid, asyncio.Lock()):
+        row = db.get_session(sid)
+        active = _active.get(sid)
+        if active is not None:
+            active.closing = True
+            async with asyncio.timeout(_DELETE_TIMEOUT_S):
+                await active.client.disconnect()
+            task = active._engine_task
+            if task is not None:
+                task.cancel()
+                done, _ = await asyncio.wait({task}, timeout=_DELETE_TIMEOUT_S)
+                if not done:
+                    raise TimeoutError("Session turn did not stop; files were not deleted")
+                await asyncio.gather(task, return_exceptions=True)
+        db.delete_session(sid)
         _active.pop(sid, None)
-    db.delete_session(sid)
-    # best-effort wipe of workspace + transcript
-    row = db.get_session(sid)
-    if row:
-        import shutil
-        for p in (Path(row["workspace"]), core.DATA_DIR / "sessions" / sid):
-            if p.exists():
-                shutil.rmtree(p, ignore_errors=True)
+        # best-effort wipe of workspace + transcript
+        if row:
+            import shutil
+            workspace = Path(row["workspace"])
+            for p in (workspace, core.DATA_DIR / "sessions" / sid, _transcript_dir(workspace)):
+                if p.exists():
+                    shutil.rmtree(p, ignore_errors=True)
 
 
 async def get_or_start(sid: str) -> ActiveSession:
@@ -118,21 +130,15 @@ async def get_or_start(sid: str) -> ActiveSession:
     up a changed MCP config), respawn the client so the caller gets a usable
     connection instead of writing into a dead pipe.
     """
-    if sid in _active:
-        active = _active[sid]
-        if client_alive(active):
-            return active
-        # Dead CLI — respawn under the lock so concurrent callers don't race.
-        lock = _active_locks.setdefault(sid, asyncio.Lock())
-        async with lock:
-            if sid in _active and client_alive(_active[sid]):
-                return _active[sid]
-            await respawn(_active[sid])
-            return _active[sid]
     lock = _active_locks.setdefault(sid, asyncio.Lock())
     async with lock:
         if sid in _active:
-            return _active[sid]
+            active = _active[sid]
+            if active.closing:
+                raise RuntimeError("Session is closing")
+            if not client_alive(active):
+                await respawn(active)
+            return active
         row = db.get_session(sid)
         if not row:
             raise KeyError(sid)
@@ -186,6 +192,11 @@ def _has_transcript(sid: str) -> bool:
     return p.exists() and p.stat().st_size > 0
 
 
+def _transcript_dir(workspace: Path) -> Path:
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", str(workspace))
+    return Path.home() / ".claude" / "projects" / slug
+
+
 def _latest_transcript(workspace: Path) -> Path | None:
     """Find the most recent SDK transcript for this session's workspace.
 
@@ -194,9 +205,7 @@ def _latest_transcript(workspace: Path) -> Path | None:
     '-'>/<uuid>.jsonl — one file per CLI process. The newest mtime is the
     current conversation.
     """
-    import re as _re
-    slug = _re.sub(r"[^a-zA-Z0-9]", "-", str(workspace))
-    proj = Path.home() / ".claude" / "projects" / slug
+    proj = _transcript_dir(workspace)
     if not proj.is_dir():
         return None
     files = [p for p in proj.glob("*.jsonl") if p.stat().st_size > 0]
@@ -333,19 +342,23 @@ async def send_user_message(active: ActiveSession, text: str) -> None:
 
     Proactively auto-compacts first if context is >= 95% full.
     """
+    if active.closing:
+        raise RuntimeError("Session is closing")
     db.touch_session(active.session_id)
 
     # Proactive auto-compact: if context is >= 95% full, trigger compact before query
     try:
         usage = await active.client.get_context_usage()
         pct = float(usage.get("percentage", 0) or 0)
-        if pct >= 95.0:
+        if pct >= 95.0 and not active.closing:
             import logging
             logging.getLogger("ds_agent.sessions").info("Auto-compacting session %s (context at %.1f%%)", active.session_id, pct)
             await active.client.query("/compact")
     except Exception:
         pass
 
+    if active.closing:
+        raise RuntimeError("Session is closing")
     await active.pending_steer.put({"type": "user", "text": text})
 
 async def interrupt(active: ActiveSession) -> None:
@@ -452,6 +465,8 @@ def _ensure_engine_started(active: ActiveSession) -> None:
     """Start the single shared reader/watchdog task for this session, if not
     already running. Idempotent — safe to call from every stream_events()
     caller (web UI WS connect, each Telegram message, ...)."""
+    if active.closing:
+        raise RuntimeError("Session is closing")
     if active._engine_task is None or active._engine_task.done():
         active._engine_task = asyncio.create_task(_run_turn_engine(active))
 
@@ -542,6 +557,7 @@ async def _run_turn_engine(active: ActiveSession) -> None:
     finally:
         sender.cancel()
         pump_task.cancel()
+        await asyncio.gather(sender, pump_task, return_exceptions=True)
         _broadcast(active, _ENGINE_STOPPED)
 
 
