@@ -42,10 +42,13 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import fcntl
+import functools
 import json
 import os
 import re
 import ssl
+import tempfile
 import time
 import urllib.request
 from collections.abc import Awaitable, Callable
@@ -105,6 +108,35 @@ def _path(name: str) -> Path:
     return batch_dir() / f"{name}.json"
 
 
+def _lock_file():
+    directory = batch_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    return (directory / ".batch.lock").open("a")
+
+
+def _serialized(fn):
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        with _lock_file() as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return fn(*args, **kwargs)
+    return wrapped
+
+
+def _serialized_async(fn):
+    @functools.wraps(fn)
+    async def wrapped(*args, **kwargs):
+        with _lock_file() as lock:
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(0.02)
+            return await fn(*args, **kwargs)
+    return wrapped
+
+
 def load(name: str) -> dict[str, Any]:
     p = _path(name)
     if not p.exists():
@@ -115,9 +147,15 @@ def load(name: str) -> dict[str, Any]:
 def save(batch: dict[str, Any]) -> None:
     p = _path(batch["name"])
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(batch, indent=1))
-    tmp.replace(p)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", dir=p.parent, prefix=f".{p.stem}-", suffix=".tmp", delete=False) as stream:
+            tmp = Path(stream.name)
+            json.dump(batch, stream, indent=1)
+        tmp.replace(p)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 def list_batches() -> list[dict[str, Any]]:
@@ -175,6 +213,7 @@ def _active_slugs(skip: str | None = None) -> dict[str, str]:
     return out
 
 
+@_serialized
 def create_batch(
     name: str,
     jobs: list[dict[str, Any]],
@@ -215,6 +254,7 @@ def create_batch(
     return summary(batch)
 
 
+@_serialized
 def add_jobs(name: str, jobs: list[dict[str, Any]]) -> dict[str, Any]:
     """Append queued jobs to an existing batch (same checks as ``create_batch``)."""
     batch = load(name)
@@ -232,6 +272,7 @@ def add_jobs(name: str, jobs: list[dict[str, Any]]) -> dict[str, Any]:
     return summary(batch)
 
 
+@_serialized
 def update_job(name: str, slug: str, **meta: Any) -> dict[str, Any]:
     """Merge caller-owned fields into a job's ``meta`` (the runner never reads them)."""
     batch = load(name)
@@ -391,6 +432,7 @@ def _running_everywhere(batch: dict[str, Any]) -> int:
     return n
 
 
+@_serialized_async
 async def step(name: str, call_tool: CallTool, *, download: Downloader = http_download) -> dict[str, Any]:
     """Refresh, collect and push. Returns the batch summary plus this step's events."""
     batch = load(name)
@@ -464,6 +506,7 @@ def status(name: str | None = None) -> dict[str, Any]:
     return {"batches": [{"name": b["name"], "counts": summary(b)["counts"]} for b in list_batches()]}
 
 
+@_serialized
 def retry(name: str, slug: str) -> dict[str, Any]:
     """Requeue an ended or collected job; its next push is a new version of the same notebook."""
     batch = load(name)
@@ -478,6 +521,7 @@ def retry(name: str, slug: str) -> dict[str, Any]:
     return summary(batch)
 
 
+@_serialized_async
 async def cancel(name: str, slug: str, call_tool: CallTool) -> dict[str, Any]:
     """Cancel a job: drop it if queued, ask Kaggle to stop it if running."""
     batch = load(name)
@@ -608,14 +652,14 @@ async def dispatch(name: str, args: dict[str, Any], call_tool: CallTool) -> dict
     if name == "batch_create":
         a = dict(args)
         opts = {k: a.pop(k) for k in list(a) if k in DEFAULTS}
-        return create_batch(a["name"], a["jobs"], owner=a["owner"], out_root=a.get("out_root"),
+        return await asyncio.to_thread(create_batch, a["name"], a["jobs"], owner=a["owner"], out_root=a.get("out_root"),
                             replace=bool(a.get("replace", False)), **opts)
     if name == "batch_step":
         return await step(args["name"], call_tool)
     if name == "batch_status":
         return status(args.get("name"))
     if name == "batch_retry":
-        return retry(args["name"], args["slug"])
+        return await asyncio.to_thread(retry, args["name"], args["slug"])
     if name == "batch_cancel":
         return await cancel(args["name"], args["slug"], call_tool)
     raise BatchError(f"unknown batch tool {name!r}")
