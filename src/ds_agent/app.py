@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import ipaddress
 import time
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Form, Depends, UploadFile, File
@@ -141,11 +142,22 @@ _otp_last_sent: dict[str, float] = {}  # per-IP resend cooldown, process-local
 
 
 def _client_ip(request: Request) -> str:
-    """Best-effort client IP: honor X-Forwarded-For (set by Caddy) else socket peer."""
+    """Walk forwarding hops only while the current peer is explicitly trusted."""
+    peer = request.client.host if request.client else "unknown"
     xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    if not xff or not core.APP_TRUSTED_PROXIES.strip():
+        return peer
+    try:
+        trusted = [ipaddress.ip_network(p.strip()) for p in core.APP_TRUSTED_PROXIES.split(",") if p.strip()]
+        current = ipaddress.ip_address(peer)
+        hops = [ipaddress.ip_address(h.strip()) for h in xff.split(",")]
+    except ValueError:
+        return peer
+    for hop in reversed(hops):
+        if not any(current in network for network in trusted):
+            break
+        current = hop
+    return str(current)
 
 
 def _login_blocked(ip: str) -> bool:
@@ -179,7 +191,7 @@ async def login_submit(request: Request, password: str = Form(...)):
     kwargs = {"httponly": True, "samesite": "lax"}
     if core.APP_PUBLIC:
         kwargs["secure"] = True
-    resp.set_cookie("sid", tok, **kwargs)
+    resp.set_cookie("sid", tok, max_age=core.APP_SESSION_TTL_SECONDS, **kwargs)
     return resp
 
 
@@ -251,12 +263,13 @@ async def login_otp_verify(request: Request, code: str = Form(...)):
     kwargs = {"httponly": True, "samesite": "lax"}
     if core.APP_PUBLIC:
         kwargs["secure"] = True
-    resp.set_cookie("sid", tok, **kwargs)
+    resp.set_cookie("sid", tok, max_age=core.APP_SESSION_TTL_SECONDS, **kwargs)
     return resp
 
 
 @app.get("/logout")
 async def logout(request: Request):
+    db.delete_cookie_token(request.cookies.get("sid", ""))
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie("sid")
     return resp
