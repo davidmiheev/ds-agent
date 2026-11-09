@@ -20,6 +20,7 @@ resulting tokens are stored at `~/.config/colab-cli/token.json` and reused.
 from __future__ import annotations
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -158,6 +159,43 @@ def _active_session() -> Optional[SessionState]:
     # Pick the most recently used
     return list(sessions.values())[-1]
 
+
+def _resume_path(s: SessionState) -> Path:
+    directory = Path(_state["store"].path).with_suffix(".mcp-resume")
+    return directory / (hashlib.sha256(s.name.encode()).hexdigest() + ".json")
+
+
+def _save_resume(s: SessionState, notebook_hash, variant, accelerator, shape) -> None:
+    path = _resume_path(s)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _write_private(str(path), json.dumps({
+        "endpoint": s.endpoint, "notebook_hash": str(notebook_hash),
+        "variant": variant.value, "accelerator": accelerator.value, "shape": shape.value,
+    }))
+
+
+def _restore_active_session() -> Optional[SessionState]:
+    s = _active_session()
+    if s is None:
+        return None
+    try:
+        data = json.loads(_resume_path(s).read_text())
+        if data["endpoint"] != s.endpoint:
+            raise ValueError("assignment endpoint changed")
+        metadata = {
+            "notebook_hash": uuid.UUID(data["notebook_hash"]),
+            "variant": Variant(data["variant"]),
+            "accelerator": Accelerator(data["accelerator"]),
+            "shape": Shape(data["shape"]),
+        }
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise RuntimeError(
+            f"Cannot resume session {s.name!r}: missing or invalid saved assignment identity. "
+            "Legacy sessions must be stopped explicitly before calling colab_new."
+        ) from error
+    _state.update(metadata, active_session=s, runtime_token_expires_at=None)
+    return s
+
 def _refresh_runtime_token_if_needed() -> None:
     """Re-issue the runtime proxy token if it's expired or about to be.
 
@@ -178,7 +216,9 @@ def _refresh_runtime_token_if_needed() -> None:
     expires_at = _state.get("runtime_token_expires_at")
     if expires_at is not None and time.time() < expires_at - _TOKEN_REFRESH_MARGIN_S:
         return  # still fresh
-    notebook_hash = _state.get("notebook_hash") or uuid.uuid4()
+    notebook_hash = _state.get("notebook_hash")
+    if notebook_hash is None:
+        raise RuntimeError("Cannot refresh without the saved notebook hash; refusing to create a new assignment.")
     res = _get_client().assign(
         notebook_hash,
         variant=_state.get("variant"),
@@ -243,7 +283,7 @@ def _is_proxy_auth_error(error: Exception) -> bool:
 
 
 def _active_runtime() -> ColabRuntime:
-    s = _state["active_session"]
+    s = _state["active_session"] or _restore_active_session()
     if s is None:
         raise RuntimeError("No active session. Call `colab_new` first.")
     _refresh_runtime_token_if_needed()
@@ -615,6 +655,7 @@ def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                 variant=variant.value, accelerator=accel.value,
                 machine_shape=("HIGH_RAM" if shape == Shape.HIGH_RAM else "STANDARD"),
             )
+            _save_resume(s, notebook_hash, variant, accel, shape)
             _state["store"].add(s)
             _state["active_session"] = s
             _state["runtime"] = None  # lazy init
@@ -726,6 +767,7 @@ def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
             try:
                 _drop_runtime()
                 _state["store"].remove(s.name)
+                _resume_path(s).unlink(missing_ok=True)
             except Exception as e:
                 return [types.TextContent(type="text", text=f"Error stopping: {e}")]
             _state["active_session"] = None

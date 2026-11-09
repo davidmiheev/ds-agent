@@ -57,7 +57,7 @@ def reset():
         name="test", url="https://fake", token="fake", endpoint="endpoint",
         kernel_id="same-kernel", session_id="same-session", accelerator="NONE",
         variant="DEFAULT", machine_shape="STANDARD"), runtime=None,
-        runtime_token_expires_at=time.time() + 3600,
+        runtime_token_expires_at=time.time() + 3600, notebook_hash=uuid.UUID(int=1),
         store=SimpleNamespace(add=lambda s: None, list=lambda: {}))
 
 
