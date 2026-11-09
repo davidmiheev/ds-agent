@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import core, db, sessions
 from .artifact_parser import ARTIFACT_RE
+from .workspace_files import artifact_path
 
 # Skip individual artifact files bigger than this, and stop adding artifacts
 # once the running total crosses this — keeps the zip a sane email/Telegram
@@ -28,13 +29,7 @@ _ROLE_LABEL = {
 
 
 def _resolve_artifact_path(path: str, workspace: Path) -> Path | None:
-    p = Path(path)
-    if p.exists() and p.is_file():
-        return p
-    cand = workspace / p.name
-    if cand.exists() and cand.is_file():
-        return cand
-    return None
+    return artifact_path(path, workspace)
 
 
 def build_markdown(sid: str) -> tuple[str, list[Path]]:

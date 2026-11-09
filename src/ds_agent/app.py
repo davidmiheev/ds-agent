@@ -11,6 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import core, db, crypto, sessions, telegram, model_catalog, export as export_mod
 from .providers import env_for
+from .workspace_files import workspace_path, write_private
 
 db.init()
 
@@ -319,7 +320,7 @@ async def save_mcp(payload: dict):
             parsed = {"mcpServers": parsed}
     except Exception as e:
         raise HTTPException(400, f"invalid JSON: {e}")
-    core.MCP_CONFIG_PATH.write_text(json.dumps(parsed, indent=2))
+    write_private(core.MCP_CONFIG_PATH, json.dumps(parsed, indent=2))
     return {"ok": True}
 
 
@@ -454,7 +455,7 @@ async def list_files(sid: str):
     out = []
     if ws.exists():
         for p in ws.rglob("*"):
-            if p.is_file():
+            if p.is_file() and workspace_path(p, ws) is not None:
                 rel = p.relative_to(ws).as_posix()
                 out.append({"path": rel, "size": p.stat().st_size})
     return out
@@ -466,10 +467,9 @@ async def read_file(sid: str, path: str):
     row = sessions.get(sid)
     if not row:
         raise HTTPException(404, "no such session")
-    full = (Path(row["workspace"]) / path).resolve()
-    ws_root = Path(row["workspace"]).resolve()
-    if not full.is_relative_to(ws_root):
-        raise HTTPException(403, "path escapes workspace")
+    full = workspace_path(Path(path), Path(row["workspace"]))
+    if full is None:
+        raise HTTPException(403, "path is outside the workspace or private")
     if not full.exists() or not full.is_file():
         raise HTTPException(404, "no such file")
     # Browsers (Chrome in particular) will NOT render text/csv, text/markdown,
