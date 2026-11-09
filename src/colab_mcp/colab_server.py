@@ -25,10 +25,15 @@ import logging
 import os
 import posixpath
 import sys
+import threading
 import time
 import uuid
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Optional
+
+import requests
+from websocket import WebSocketException
 
 # Use the stdio MCP server primitives from the official SDK.
 from mcp.server import Server, NotificationOptions
@@ -65,6 +70,8 @@ logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 # 3600s, independent of how long the underlying runtime itself stays up.
 # Refresh a bit before the deadline so an execute call never races expiry.
 _TOKEN_REFRESH_MARGIN_S = 60
+_WARMUP_TIMEOUT_S = 10
+_runtime_lock = threading.Lock()
 
 # The pending OAuth flow's PKCE verifier is also persisted here (0600) so a
 # `colab_auth(code=...)` still completes if the MCP server process restarted
@@ -186,7 +193,53 @@ def _refresh_runtime_token_if_needed() -> None:
     # Force a rebuild with the fresh token below — but keep kernel_id/
     # session_id on `s` so _active_runtime() reconnects to the SAME running
     # kernel instead of starting a new one.
+    _drop_runtime()
+
+
+def _close_runtime(runtime) -> None:
+    if runtime is not None:
+        try:
+            runtime.stop()
+        except Exception:
+            LOG.warning("Failed to close Colab runtime client", exc_info=True)
+
+
+def _drop_runtime() -> None:
+    runtime = _state["runtime"]
     _state["runtime"] = None
+    _close_runtime(runtime)
+
+
+def _is_transport_error(error: Exception) -> bool:
+    if isinstance(error, (ConnectionError, TimeoutError, requests.ConnectionError,
+                          requests.Timeout, WebSocketException)):
+        return True
+    if isinstance(error, requests.HTTPError):
+        return error.response is not None and error.response.status_code in (401, 403, 502, 503, 504)
+    return isinstance(error, RuntimeError) and str(error) in {
+        "Connection was lost.",
+        "IOPub channel must be running to receive output",
+        "stdin channel must be running to allow input",
+        "Kernel died before replying to kernel_info",
+        "Kernel dead before the code finished.",
+        "Kernel restarting before the code finished.",
+    }
+
+
+def _is_proxy_auth_error(error: Exception) -> bool:
+    if not isinstance(error, requests.HTTPError) or error.response is None:
+        return False
+    if error.response.status_code not in (401, 403):
+        return False
+    session = _state["active_session"]
+    if session is None or not error.response.url:
+        return False
+    proxy = urlsplit(session.url)
+    response = urlsplit(error.response.url)
+    prefix = proxy.path.rstrip("/")
+    return bool(proxy.netloc) and (proxy.scheme, proxy.netloc) == (response.scheme, response.netloc) and (
+        response.path == prefix or response.path.startswith(prefix + "/")
+    )
 
 
 def _active_runtime() -> ColabRuntime:
@@ -201,7 +254,7 @@ def _active_runtime() -> ColabRuntime:
         def on_sid(sid):
             s.session_id = sid
             _state["store"].add(s)
-        _state["runtime"] = ColabRuntime(
+        runtime = ColabRuntime(
             s.url, s.token,
             kernel_id=s.kernel_id, session_id=s.session_id,
             on_kernel_started=on_kid, on_session_started=on_sid,
@@ -212,9 +265,15 @@ def _active_runtime() -> ColabRuntime:
         # `open()` from colab_execute'd code if the kernel's cwd isn't
         # /content. The official CLI does this same chdir before every
         # exec/repl; here it only needs to happen once per fresh kernel.
-        _state["runtime"].execute_code(
-            "import os; os.makedirs('/content', exist_ok=True); os.chdir('/content')"
-        )
+        try:
+            runtime.execute_code(
+                "import os; os.makedirs('/content', exist_ok=True); os.chdir('/content')",
+                timeout=_WARMUP_TIMEOUT_S,
+            )
+        except Exception:
+            _close_runtime(runtime)
+            raise
+        _state["runtime"] = runtime
     return _state["runtime"]
 
 # ---------------- MCP tool definitions ----------------
@@ -492,6 +551,17 @@ def _complete_oauth(code: str) -> dict:
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
+    return await asyncio.to_thread(_dispatch_tool, name, arguments)
+
+
+def _dispatch_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
+    if name in {"colab_status", "colab_sessions"}:
+        return _call_tool(name, arguments)
+    with _runtime_lock:
+        return _call_tool(name, arguments)
+
+
+def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
     try:
         if name == "colab_auth":
             if "code" not in arguments:
@@ -583,7 +653,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
             }, indent=2))]
 
         if name == "colab_sessions":
-            assignments = _get_client().list_assignments()
+            from google.auth.transport.requests import AuthorizedSession
+            # Read-only listing must not borrow the busy runtime's HTTP session.
+            with AuthorizedSession(_get_creds()) as session:
+                assignments = Client(Prod(), session).list_assignments()
             out = []
             for a in assignments:
                 out.append({
@@ -644,18 +717,14 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                 "    print('STDERR:', r.stderr[-2000:], file=sys.stderr)\n"
                 "    raise SystemExit(r.returncode)\n"
             )
-            return await call_tool("colab_execute", {"code": code, "timeout": 300})
+            return _call_tool("colab_execute", {"code": code, "timeout": 300})
 
         if name == "colab_stop":
             s = _active_session()
             if s is None:
                 return [types.TextContent(type="text", text="No active session.")]
             try:
-                if _state["runtime"]:
-                    try:
-                        _state["runtime"].kernel_client.stop()
-                    except Exception:
-                        pass
+                _drop_runtime()
                 _state["store"].remove(s.name)
             except Exception as e:
                 return [types.TextContent(type="text", text=f"Error stopping: {e}")]
@@ -672,6 +741,17 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
 
         return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:
+        state_lost = False
+        if name in {"colab_execute", "colab_upload"} and _is_transport_error(e):
+            if _is_proxy_auth_error(e):
+                _state["runtime_token_expires_at"] = None
+            _drop_runtime()
+            if isinstance(e, RuntimeError) and str(e) == "Kernel dead before the code finished.":
+                s = _state["active_session"]
+                if s is not None:
+                    s.kernel_id = s.session_id = None
+                    _state["store"].add(s)
+                    state_lost = True
         import traceback
         tb = traceback.format_exc()
         # If it's a credential error, hint at the auth flow. Don't mistake
@@ -699,7 +779,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                 )]
             except Exception:
                 pass
-        return [types.TextContent(type="text", text=f"Error: {e}\n\n{tb}")]
+        note = " Kernel state was lost; the next call will start a fresh kernel." if state_lost else ""
+        return [types.TextContent(type="text", text=f"Error: {e}{note}\n\n{tb}")]
 
 
 async def main():
