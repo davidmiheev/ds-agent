@@ -617,7 +617,11 @@ def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
             # Close the old kernel client and unassign the old endpoint now —
             # after the new assign() succeeded, so a failed provision doesn't
             # kill a still-usable runtime.
-            prev = _active_session()
+            # Use _state["active_session"], NOT _active_session(): the shared
+            # StateStore can hold sessions created by other processes (another
+            # server instance, the CLI), and unassigning an endpoint we do not
+            # own would destroy someone else's running work.
+            prev = _state["active_session"]
             _drop_runtime()
             released_prev = None
             if prev is not None and prev.endpoint and prev.endpoint != endpoint:

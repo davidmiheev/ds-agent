@@ -68,6 +68,26 @@ async def test_new_with_no_previous():
     print("test_new_with_no_previous: OK")
 
 
+async def test_new_does_not_release_foreign_session():
+    """A session that exists only in the shared StateStore (created by another
+    process or the CLI) must NOT be unassigned — it isn't ours to kill."""
+    foreign = SimpleNamespace(name="foreign", endpoint="foreign-endpoint")
+    client = Mock()
+    client.assign.return_value = _assign_result()
+    store = Mock()
+    store.list.return_value = {"foreign": foreign}
+    _reset_state(client=client, store=store)   # active_session=None, runtime=None
+
+    result = await cs.call_tool("colab_new", {})
+    out = json.loads(result[0].text)
+
+    assert out["status"] == "provisioning"
+    assert "released_previous_endpoint" not in out
+    client.unassign.assert_not_called()
+    store.remove.assert_not_called()
+    print("test_new_does_not_release_foreign_session: OK")
+
+
 async def test_new_survives_unassign_failure():
     """A failed release of the previous runtime must not block provisioning."""
     prev = SimpleNamespace(name="old", endpoint="old-endpoint")
@@ -108,5 +128,6 @@ async def test_new_failed_assign_keeps_previous():
 if __name__ == "__main__":
     asyncio.run(test_new_releases_previous_runtime())
     asyncio.run(test_new_with_no_previous())
+    asyncio.run(test_new_does_not_release_foreign_session())
     asyncio.run(test_new_survives_unassign_failure())
     asyncio.run(test_new_failed_assign_keeps_previous())
