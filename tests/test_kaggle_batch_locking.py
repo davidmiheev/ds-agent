@@ -70,7 +70,8 @@ def check_workers(kind, same_batch):
 async def async_checks():
     with tempfile.TemporaryDirectory() as directory:
         os.environ["KAGGLE_BATCH_DIR"] = directory
-        kb.create_batch("a", [{"slug": "job-a0", "script": "print(1)"}], owner="fake")
+        await asyncio.to_thread(kb.create_batch, "a",
+                                [{"slug": "job-a0", "script": "print(1)"}], owner="fake")
         await asyncio.wait_for(asyncio.gather(
             kb.step("a", fake_tool),
             kb.dispatch("batch_create", {"name": "empty", "owner": "fake", "jobs": []}, fake_tool),
@@ -94,7 +95,20 @@ async def async_checks():
         task.cancel()
         await asyncio.gather(task, waiter, return_exceptions=True)
         await asyncio.wait_for(kb.step("a", fake_tool), timeout=2)
+
+    # Sync mutations called directly on the event loop would deadlock (blocking
+    # flock while a lock-holder needs the loop); they must fail loudly instead.
+    for fn, args in ((kb.retry, ("a", "job-a0")),
+                     (kb.update_job, ("a", "job-a0")),
+                     (kb.create_batch, ("c", []))):
+        try:
+            fn(*args)
+        except kb.BatchError:
+            pass
+        else:
+            raise AssertionError(f"{fn.__name__} on the loop did not fail fast")
     print("async dispatch, empty/error paths and cancellation release locks: OK")
+    print("sync mutations on the event loop raise instead of deadlocking: OK")
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ The account token never enters a batch file or a result.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import fnmatch
 import fcntl
 import functools
@@ -114,9 +115,28 @@ def _lock_file():
     return (directory / ".batch.lock").open("a")
 
 
+# Sync mutations wait for the lock INSIDE a worker thread; if they shared the
+# loop's default executor, enough queued waiters could starve `step` of the
+# worker it needs for downloads/RPC and deadlock the batch. They get their own
+# small pool — threads queue here while the default executor stays free.
+_SYNC_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="kaggle-batch")
+
+
 def _serialized(fn):
     @functools.wraps(fn)
     def wrapped(*args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            # A blocking flock on the event loop freezes the very `step`/`cancel`
+            # that holds the lock — deadlock, not contention. Fail loudly so the
+            # caller moves this call into a thread.
+            raise BatchError(
+                f"{fn.__name__}() blocks on the batch lock; call it via "
+                "asyncio.to_thread (or kaggle_batch.dispatch) from async code")
         with _lock_file() as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             return fn(*args, **kwargs)
@@ -652,14 +672,18 @@ async def dispatch(name: str, args: dict[str, Any], call_tool: CallTool) -> dict
     if name == "batch_create":
         a = dict(args)
         opts = {k: a.pop(k) for k in list(a) if k in DEFAULTS}
-        return await asyncio.to_thread(create_batch, a["name"], a["jobs"], owner=a["owner"], out_root=a.get("out_root"),
-                            replace=bool(a.get("replace", False)), **opts)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            _SYNC_POOL, functools.partial(create_batch, a["name"], a["jobs"],
+                                          owner=a["owner"], out_root=a.get("out_root"),
+                                          replace=bool(a.get("replace", False)), **opts))
     if name == "batch_step":
         return await step(args["name"], call_tool)
     if name == "batch_status":
         return status(args.get("name"))
     if name == "batch_retry":
-        return await asyncio.to_thread(retry, args["name"], args["slug"])
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(_SYNC_POOL, retry, args["name"], args["slug"])
     if name == "batch_cancel":
         return await cancel(args["name"], args["slug"], call_tool)
     raise BatchError(f"unknown batch tool {name!r}")
