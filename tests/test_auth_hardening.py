@@ -1,16 +1,19 @@
 """Credential-free proxy/cookie regression checks."""
 import asyncio
+import json
 import os
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 home = tempfile.TemporaryDirectory()
 os.environ["CODING_AGENT_HOME"] = home.name
-from ds_agent import app, core, db
+from ds_agent import app, core, db, sessions
 from starlette.requests import Request
+from fastapi import WebSocketDisconnect
 
 
 def request(peer="127.0.0.1", xff="", cookie=""):
@@ -51,6 +54,53 @@ async def main():
             response = await app.login_submit(request(), "test")
             assert "Max-Age=60" in response.headers["set-cookie"]
     print("cookie issuance, expiry boundary, logout revocation and browser TTL: OK")
+
+    # An established WebSocket must lose access when its cookie is revoked —
+    # re-validated per incoming command, not just at accept time.
+    with patch.object(core, "APP_PASSWORD", "x"), patch.object(app, "_otp_mode", return_value=False):
+        cookie = db.make_cookie_token()
+
+        class FakeWS:
+            def __init__(self, messages, revoke_at=None):
+                self.cookies = {"sid": cookie}
+                self._messages = list(messages)
+                self._revoke_at = revoke_at
+                self.sent, self.closed, self.accepted = [], None, False
+
+            async def close(self, code=1000):
+                self.closed = code
+
+            async def accept(self):
+                self.accepted = True
+
+            async def send_text(self, data):
+                self.sent.append(data)
+
+            async def receive_text(self):
+                if not self._messages:
+                    raise WebSocketDisconnect()
+                if self._revoke_at == 0:
+                    db.delete_cookie_token(cookie)   # simulate logout mid-connection
+                self._revoke_at = None if self._revoke_at is None else self._revoke_at - 1
+                return self._messages.pop(0)
+
+        async def _empty_stream(*_a, **_k):
+            if False:
+                yield {}
+
+        fake_active = SimpleNamespace(db_row={}, workspace=Path("/tmp"), in_use=False)
+        with patch.object(sessions, "get_or_start", AsyncMock(return_value=fake_active)), \
+             patch.object(sessions, "subscribe", return_value=asyncio.Queue()), \
+             patch.object(sessions, "stream_from", _empty_stream), \
+             patch.object(sessions, "send_user_message", AsyncMock()) as send_um:
+            ws = FakeWS([json.dumps({"type": "ping"}),
+                         json.dumps({"type": "user", "text": "hi"})], revoke_at=1)
+            await app.ws_session(ws, "sid-1")
+            assert ws.accepted
+            assert any('"pong"' in s for s in ws.sent)          # pre-revocation ping worked
+            assert ws.closed == 4401                            # revoked mid-connection
+            send_um.assert_not_called()                          # user command never dispatched
+        print("websocket command re-validation on expiry/logout: OK")
 
 
 if __name__ == "__main__":

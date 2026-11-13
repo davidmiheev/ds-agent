@@ -569,7 +569,12 @@ async def upload_dataset(sid: str, file: UploadFile = File(...)):
 # ------------------------------------------------------ WebSocket bridge ---
 @app.websocket("/ws/sessions/{sid}")
 async def ws_session(ws: WebSocket, sid: str):
-    if _auth_required() and not db.check_cookie(ws.cookies.get("sid", "")):
+    sid_cookie = ws.cookies.get("sid", "")
+
+    def _still_authed() -> bool:
+        return not _auth_required() or db.check_cookie(sid_cookie)
+
+    if not _still_authed():
         await ws.close(code=4401)
         return
     await ws.accept()
@@ -601,8 +606,16 @@ async def ws_session(ws: WebSocket, sid: str):
         }))
 
         async def reader():
+            last_auth_check = time.time()
             try:
                 async for frame in sessions.stream_from(active, sub_q):
+                    # An expired/revoked cookie must end access mid-stream, not
+                    # just at connect: re-check periodically while frames flow.
+                    if time.time() - last_auth_check > 30:
+                        last_auth_check = time.time()
+                        if not _still_authed():
+                            await ws.close(code=4401)
+                            return
                     # Forward all frame types; artifact rewriting already happened
                     # in stream_events. Skip only the keepalive 'result' type's
                     # internal subtypes that the UI doesn't need.
@@ -628,6 +641,11 @@ async def ws_session(ws: WebSocket, sid: str):
                 msg = json.loads(raw)
             except Exception:
                 continue
+            # Re-validate per command: expiry and logout must stop an already-
+            # established connection from submitting further agent commands.
+            if not _still_authed():
+                await ws.close(code=4401)
+                break
             t = msg.get("type")
             if t == "user":
                 await sessions.send_user_message(active, msg.get("text", ""))
