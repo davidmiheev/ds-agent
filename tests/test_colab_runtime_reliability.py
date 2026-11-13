@@ -120,7 +120,7 @@ async def test_refresh_closes_old_runtime():
     await cs.call_tool("colab_execute", {"code": "pass"})
     old = cs._state["runtime"]
     cs._state["runtime_token_expires_at"] = 0
-    response = SimpleNamespace(runtime_proxy_info=SimpleNamespace(
+    response = SimpleNamespace(endpoint="endpoint", runtime_proxy_info=SimpleNamespace(
         token="fresh", url="https://fake", token_expires_in_seconds=3600))
     with patch.object(cs, "_get_client", return_value=SimpleNamespace(assign=lambda *a, **k: response)):
         await cs.call_tool("colab_execute", {"code": "pass"})

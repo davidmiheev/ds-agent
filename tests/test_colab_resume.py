@@ -74,6 +74,36 @@ async def main():
                 result = await cs.call_tool("colab_execute", {"code": "must_not_run"})
                 assert "No active session" in result[0].text
                 print("missing/corrupt/mismatched identity and empty store never provision: OK")
+
+            # Default RAM: resolve_assign_shape returns None — _save_resume must
+            # persist null, not crash after assign() already billed a runtime.
+            cs._state.update({k: None for k in cs._state})
+            cs._state["store"] = cs.StateStore(store_path)
+            with patch.object(cs, "_get_client", return_value=SimpleNamespace(assign=assign)):
+                result = await cs.call_tool("colab_new", {"session": "default-ram"})
+                out = json.loads(result[0].text)
+                assert out["status"] == "provisioning", out
+                data = json.loads(cs._resume_path(cs._state["store"].get("default-ram")).read_text())
+                assert data["shape"] is None, data
+            print("default RAM persists shape=null without crashing: OK")
+
+            # Refresh returning a DIFFERENT endpoint = the saved runtime is gone;
+            # the replacement must be released and the call must fail, not target
+            # the old kernel through the new proxy.
+            cs._state.update({k: None for k in cs._state})
+            cs._state["store"] = cs.StateStore(store_path)
+            released = []
+            def assign_new(notebook_hash, **options):
+                return SimpleNamespace(endpoint="new-endpoint", runtime_proxy_info=SimpleNamespace(
+                    token="fake", url="https://fake", token_expires_in_seconds=3600))
+            client = SimpleNamespace(assign=assign_new,
+                                     unassign=lambda endpoint: released.append(endpoint))
+            with patch.object(cs, "_get_client", return_value=client), \
+                 patch.object(cs, "ColabRuntime", Runtime):
+                result = await cs.call_tool("colab_execute", {"code": "must_not_run"})
+                assert "gone" in result[0].text, result
+                assert released == ["new-endpoint"], released
+            print("refresh releases a replacement runtime instead of reusing it: OK")
     finally:
         cs._state.clear()
         cs._state.update(original)

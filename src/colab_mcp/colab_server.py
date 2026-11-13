@@ -170,7 +170,10 @@ def _save_resume(s: SessionState, notebook_hash, variant, accelerator, shape) ->
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     _write_private(str(path), json.dumps({
         "endpoint": s.endpoint, "notebook_hash": str(notebook_hash),
-        "variant": variant.value, "accelerator": accelerator.value, "shape": shape.value,
+        "variant": variant.value, "accelerator": accelerator.value,
+        # resolve_assign_shape() returns None for default RAM — keep it as JSON
+        # null instead of crashing after assign() already billed a runtime.
+        "shape": shape.value if shape is not None else None,
     }))
 
 
@@ -186,7 +189,7 @@ def _restore_active_session() -> Optional[SessionState]:
             "notebook_hash": uuid.UUID(data["notebook_hash"]),
             "variant": Variant(data["variant"]),
             "accelerator": Accelerator(data["accelerator"]),
-            "shape": Shape(data["shape"]),
+            "shape": Shape(data["shape"]) if data["shape"] is not None else None,
         }
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise RuntimeError(
@@ -225,6 +228,19 @@ def _refresh_runtime_token_if_needed() -> None:
         accelerator=_state.get("accelerator"),
         shape=_state.get("shape"),
     )
+    if res.endpoint != s.endpoint:
+        # The saved runtime is gone: assign() provisioned a fresh one whose
+        # kernel does not match this session's kernel_id. Release the new
+        # billable runtime and fail rather than executing against the wrong
+        # proxy/kernel.
+        try:
+            _get_client().unassign(res.endpoint)
+        except Exception:
+            LOG.warning("could not release replacement runtime %s", res.endpoint)
+        _resume_path(s).unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Saved runtime {s.endpoint} is gone (assign returned {res.endpoint}); "
+            "call `colab_stop` then `colab_new` for a fresh session.")
     s.token = res.runtime_proxy_info.token
     s.url = res.runtime_proxy_info.url
     _state["store"].add(s)
