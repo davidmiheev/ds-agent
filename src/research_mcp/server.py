@@ -88,7 +88,7 @@ def _ssl_ctx():
 def arxiv_search(query: str, max_results: int = 10) -> list[dict]:
     """Search arXiv. `query` may include field qualifiers like au:Author, ti:Title, abs:Abstract."""
     q = urllib.parse.quote(query)
-    url = f"http://export.arxiv.org/api/query?search_query=all:{q}&start=0&max_results={int(max_results)}&sortBy=relevance&sortOrder=descending"
+    url = f"https://export.arxiv.org/api/query?search_query=all:{q}&start=0&max_results={int(max_results)}&sortBy=relevance&sortOrder=descending"
     text = _http_text(url, timeout=20.0)
     root = ET.fromstring(text)
     out = []

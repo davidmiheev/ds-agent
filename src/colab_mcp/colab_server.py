@@ -610,6 +610,24 @@ def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
             token = res.runtime_proxy_info.token
             url = res.runtime_proxy_info.url
             endpoint = res.endpoint
+
+            # This MCP drives ONE active session, so once `s` is installed the
+            # previous runtime is unreachable from every tool: its kernel client
+            # stays connected and the remote runtime keeps billing forever.
+            # Close the old kernel client and unassign the old endpoint now —
+            # after the new assign() succeeded, so a failed provision doesn't
+            # kill a still-usable runtime.
+            prev = _active_session()
+            _drop_runtime()
+            released_prev = None
+            if prev is not None and prev.endpoint and prev.endpoint != endpoint:
+                try:
+                    client.unassign(prev.endpoint)
+                    _state["store"].remove(prev.name)
+                    released_prev = prev.endpoint
+                except Exception:
+                    LOG.warning("could not release previous runtime %s", prev.endpoint)
+
             s = SessionState(
                 name=session_name, token=token, url=url, endpoint=endpoint,
                 variant=variant.value, accelerator=accel.value,
@@ -626,17 +644,17 @@ def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
             _state["accelerator"] = accel
             _state["shape"] = shape
             _state["runtime_token_expires_at"] = time.time() + res.runtime_proxy_info.token_expires_in_seconds
-            return [types.TextContent(
-                type="text",
-                text=json.dumps({
-                    "status": "provisioning",
-                    "session": session_name,
-                    "endpoint": endpoint,
-                    "accelerator": accel.value,
-                    "shape": s.machine_shape,
-                    "note": "The kernel will start on the first `colab_execute` call. Provisioning can take ~10-30s.",
-                }, indent=2),
-            )]
+            out = {
+                "status": "provisioning",
+                "session": session_name,
+                "endpoint": endpoint,
+                "accelerator": accel.value,
+                "shape": s.machine_shape,
+                "note": "The kernel will start on the first `colab_execute` call. Provisioning can take ~10-30s.",
+            }
+            if released_prev:
+                out["released_previous_endpoint"] = released_prev
+            return [types.TextContent(type="text", text=json.dumps(out, indent=2))]
 
         if name == "colab_status":
             s = _active_session()
@@ -707,7 +725,6 @@ def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
 
         if name == "colab_install":
             pkgs = arguments["packages"]
-            pkgs_src = " ".join(pkgs)
             code = (
                 "import subprocess, sys\n"
                 f"r = subprocess.run([sys.executable, '-m', 'pip', 'install'] + {pkgs!r}, "
