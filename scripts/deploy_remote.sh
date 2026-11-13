@@ -130,7 +130,7 @@ Group=agent
 Environment=PATH=/home/agent/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PYTHONPATH=__REMOTE_DIR__/src
 EnvironmentFile=__REMOTE_DIR__/.env
-ExecStart=__REMOTE_DIR__/.venv/bin/uvicorn ds_agent.app:app --host 0.0.0.0 --port __APP_PORT__
+ExecStart=__REMOTE_DIR__/.venv/bin/uvicorn ds_agent.app:app --host 0.0.0.0 --port __APP_PORT__ --no-proxy-headers
 Restart=on-failure
 RestartSec=3
 
