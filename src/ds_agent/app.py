@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Form, Depends, UploadFile, File
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Form, UploadFile, File
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -103,19 +103,17 @@ def _is_authed(request: Request) -> bool:
     return db.check_cookie(token)
 
 
-def require_auth(request: Request) -> None:
-    if not _is_authed(request):
-        raise HTTPException(status_code=401, detail="login required")
-
-
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
+    """Fail closed: only the allowlisted public paths bypass auth. API calls
+    get a 401, page requests a redirect to /login."""
     path = request.url.path
     if path.startswith(("/static", "/login", "/logout", "/healthz")):
         return await call_next(request)
     if not _is_authed(request):
-        if path.startswith("/v1/") or path in ("/", "/settings"):
-            return RedirectResponse("/login", status_code=303)
+        if path.startswith("/v1/"):
+            return JSONResponse({"detail": "login required"}, status_code=401)
+        return RedirectResponse("/login", status_code=303)
     return await call_next(request)
 
 
@@ -375,7 +373,7 @@ async def list_models(provider: str | None = None):
     for prov, items in CURATED.items():
         out["providers"][prov] = items
     # Live enrichment for openrouter (best-effort, short timeout)
-    if (provider is None or provider == "openrouter") and "openrouter" in (provider or "openrouter",):
+    if provider in (None, "openrouter"):
         try:
             live = await openrouter_live_models()
             if live:
@@ -568,7 +566,6 @@ async def ws_session(ws: WebSocket, sid: str):
         await ws.close()
         return
 
-    active.in_use = True
     reader_task = None
     # Subscribe before anything else on this connection (including the greet
     # send below) — a message sent moments later via this WS's receive loop
@@ -625,7 +622,6 @@ async def ws_session(ws: WebSocket, sid: str):
     except WebSocketDisconnect:
         pass
     finally:
-        active.in_use = False
         # stream_events is long-lived (survives across turns); cancel the
         # reader so its internal pump tasks don't leak after the WS closes.
         if reader_task is not None:

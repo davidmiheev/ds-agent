@@ -17,7 +17,8 @@ from . import agent_prompt
 from .trim import trim_tool_result_blocks
 
 # In-memory registry of active SDK clients, keyed by session_id.
-# Each WebSocket connection borrows the client, but only one WS is allowed at a time.
+# Any number of WebSocket/Telegram consumers may subscribe to a session; the
+# shared turn engine fans the single SDK stream out to all of them.
 _active: dict[str, "ActiveSession"] = {}
 _active_locks: dict[str, asyncio.Lock] = {}
 _DELETE_TIMEOUT_S = 10
@@ -35,7 +36,6 @@ class ActiveSession:
     db_row: dict
     workspace: Path
     client: ClaudeSDKClient
-    in_use: bool = False
     pending_steer: asyncio.Queue = field(default_factory=asyncio.Queue)
     # True while a turn is in flight (set by the steer pump, cleared on the
     # result frame). The stream watchdog is only armed while this is set, so
