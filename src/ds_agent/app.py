@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import ipaddress
 import time
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Form, Depends, UploadFile, File
@@ -141,11 +142,22 @@ _otp_last_sent: dict[str, float] = {}  # per-IP resend cooldown, process-local
 
 
 def _client_ip(request: Request) -> str:
-    """Best-effort client IP: honor X-Forwarded-For (set by Caddy) else socket peer."""
+    """Walk forwarding hops only while the current peer is explicitly trusted."""
+    peer = request.client.host if request.client else "unknown"
     xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    if not xff or not core.APP_TRUSTED_PROXIES.strip():
+        return peer
+    try:
+        trusted = [ipaddress.ip_network(p.strip()) for p in core.APP_TRUSTED_PROXIES.split(",") if p.strip()]
+        current = ipaddress.ip_address(peer)
+        hops = [ipaddress.ip_address(h.strip()) for h in xff.split(",")]
+    except ValueError:
+        return peer
+    for hop in reversed(hops):
+        if not any(current in network for network in trusted):
+            break
+        current = hop
+    return str(current)
 
 
 def _login_blocked(ip: str) -> bool:
@@ -179,7 +191,7 @@ async def login_submit(request: Request, password: str = Form(...)):
     kwargs = {"httponly": True, "samesite": "lax"}
     if core.APP_PUBLIC:
         kwargs["secure"] = True
-    resp.set_cookie("sid", tok, **kwargs)
+    resp.set_cookie("sid", tok, max_age=core.APP_SESSION_TTL_SECONDS, **kwargs)
     return resp
 
 
@@ -251,12 +263,13 @@ async def login_otp_verify(request: Request, code: str = Form(...)):
     kwargs = {"httponly": True, "samesite": "lax"}
     if core.APP_PUBLIC:
         kwargs["secure"] = True
-    resp.set_cookie("sid", tok, **kwargs)
+    resp.set_cookie("sid", tok, max_age=core.APP_SESSION_TTL_SECONDS, **kwargs)
     return resp
 
 
 @app.get("/logout")
 async def logout(request: Request):
+    db.delete_cookie_token(request.cookies.get("sid", ""))
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie("sid")
     return resp
@@ -556,7 +569,12 @@ async def upload_dataset(sid: str, file: UploadFile = File(...)):
 # ------------------------------------------------------ WebSocket bridge ---
 @app.websocket("/ws/sessions/{sid}")
 async def ws_session(ws: WebSocket, sid: str):
-    if _auth_required() and not db.check_cookie(ws.cookies.get("sid", "")):
+    sid_cookie = ws.cookies.get("sid", "")
+
+    def _still_authed() -> bool:
+        return not _auth_required() or db.check_cookie(sid_cookie)
+
+    if not _still_authed():
         await ws.close(code=4401)
         return
     await ws.accept()
@@ -588,8 +606,16 @@ async def ws_session(ws: WebSocket, sid: str):
         }))
 
         async def reader():
+            last_auth_check = time.time()
             try:
                 async for frame in sessions.stream_from(active, sub_q):
+                    # An expired/revoked cookie must end access mid-stream, not
+                    # just at connect: re-check periodically while frames flow.
+                    if time.time() - last_auth_check > 30:
+                        last_auth_check = time.time()
+                        if not _still_authed():
+                            await ws.close(code=4401)
+                            return
                     # Forward all frame types; artifact rewriting already happened
                     # in stream_events. Skip only the keepalive 'result' type's
                     # internal subtypes that the UI doesn't need.
@@ -615,6 +641,11 @@ async def ws_session(ws: WebSocket, sid: str):
                 msg = json.loads(raw)
             except Exception:
                 continue
+            # Re-validate per command: expiry and logout must stop an already-
+            # established connection from submitting further agent commands.
+            if not _still_authed():
+                await ws.close(code=4401)
+                break
             t = msg.get("type")
             if t == "user":
                 await sessions.send_user_message(active, msg.get("text", ""))

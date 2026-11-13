@@ -140,9 +140,9 @@ echo "    public:   $APP_PUBLIC   backend: $SESSION_BACKEND   budget: \$${MAX_BU
 # Prefer the project venv directly (works offline); fall back to `uv run`,
 # which re-syncs deps first (needs network on first run / after dep changes).
 if [ -x "$ROOT/.venv/bin/uvicorn" ]; then
-    exec "$ROOT/.venv/bin/uvicorn" ds_agent.app:app --host "$HOST" --port "$PORT"
+    exec "$ROOT/.venv/bin/uvicorn" ds_agent.app:app --host "$HOST" --port "$PORT" --no-proxy-headers
 elif command -v uv >/dev/null 2>&1; then
-    exec uv run uvicorn ds_agent.app:app --host "$HOST" --port "$PORT"
+    exec uv run uvicorn ds_agent.app:app --host "$HOST" --port "$PORT" --no-proxy-headers
 else
     echo "error: no $ROOT/.venv/bin/uvicorn and no uv on PATH — run 'uv sync' first" >&2
     exit 1
