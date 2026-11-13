@@ -15,6 +15,7 @@ from . import core, db, providers as prov_mod
 from .artifact_parser import rewrite_tool_result_content
 from . import agent_prompt
 from .trim import trim_tool_result_blocks
+from .workspace_files import write_private
 
 # In-memory registry of active SDK clients, keyed by session_id.
 # Each WebSocket connection borrows the client, but only one WS is allowed at a time.
@@ -69,7 +70,7 @@ def create(*, provider: str, model: str, base_url: str | None = None,
             mcp_overrides: dict | None = None, title: str | None = None) -> dict:
     sid = _new_id()
     workspace = core.DATA_DIR / "workspaces" / sid
-    workspace.mkdir(parents=True, exist_ok=True)
+    workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
     (workspace / "data").mkdir(exist_ok=True)  # dataset upload landing zone
     row = {
         "id": sid,
@@ -156,7 +157,7 @@ async def _spawn_client(row: dict) -> ClaudeSDKClient:
     env = prov_mod.env_for(row["provider"], stored["key"], row.get("base_url"), row["model"])
 
     workspace = Path(row["workspace"])
-    workspace.mkdir(parents=True, exist_ok=True)
+    workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     # Compose per-session .mcp.json + .claude/settings.local.json
     await asyncio.to_thread(_render_session_dir, row, env, workspace)
@@ -328,11 +329,10 @@ def _render_session_dir(row: dict, env: dict, workspace: Path) -> None:
     mcp_servers = {**global_cfg.get("mcpServers", {}), **overrides.get("mcpServers", {})}
     mcp_servers = _resolve(mcp_servers)
 
-    workspace.joinpath(".mcp.json").write_text(
+    write_private(workspace.joinpath(".mcp.json"),
         json.dumps({"mcpServers": mcp_servers}, indent=2)
     )
-    workspace.joinpath(".claude").mkdir(exist_ok=True)
-    workspace.joinpath(".claude", "settings.local.json").write_text(
+    write_private(workspace.joinpath(".claude", "settings.local.json"),
         json.dumps({"env": env}, indent=2)
     )
 
