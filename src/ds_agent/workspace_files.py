@@ -19,15 +19,19 @@ def workspace_path(path: Path, workspace: Path) -> Path | None:
     root = workspace.resolve()
     candidate = path if path.is_absolute() else root / path
     try:
-        for p in (candidate, candidate.resolve()):
-            rel = p.relative_to(root)
-            if rel.name in core.WORKSPACE_SECRET_FILES:
-                return None
-            if any(part in core.WORKSPACE_SECRET_DIRS for part in rel.parts[:-1]):
-                return None
-        return candidate.resolve()
+        # Resolve BEFORE checking: the workspace (or the caller's spelling of a
+        # path inside it) may go through a symlinked root, and an unresolved
+        # absolute candidate is never relative_to() the resolved root. The
+        # resolved form also collapses symlink tricks that point at secret
+        # files, so checking it alone is stricter, not looser.
+        rel = candidate.resolve().relative_to(root)
     except (ValueError, OSError, RuntimeError):
         return None
+    if rel.name in core.WORKSPACE_SECRET_FILES:
+        return None
+    if any(part in core.WORKSPACE_SECRET_DIRS for part in rel.parts[:-1]):
+        return None
+    return candidate.resolve()
 
 
 def artifact_path(path: str, workspace: Path | None) -> Path | None:
