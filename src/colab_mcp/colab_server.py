@@ -725,6 +725,7 @@ def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                 return [types.TextContent(type="text", text="No active session.")]
             try:
                 _drop_runtime()
+                _get_client().unassign(s.endpoint)
                 _state["store"].remove(s.name)
             except Exception as e:
                 return [types.TextContent(type="text", text=f"Error stopping: {e}")]
