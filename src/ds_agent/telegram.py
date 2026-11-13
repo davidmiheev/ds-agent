@@ -782,7 +782,15 @@ async def _handle_document_upload(api: TelegramAPI, chat_id: int, user_id: int, 
         await api.send_message(chat_id, f"❌ Failed to obtain download link for `{file_name}`.")
         return
 
+    # Same collision handling as the web upload endpoint: report.csv ->
+    # report-1.csv, ... so a Telegram upload can't silently overwrite a
+    # dataset already in data/.
     dest = data_dir / file_name
+    n = 1
+    while dest.exists():
+        dest = data_dir / f"{dest.stem}-{n}{dest.suffix}"
+        n += 1
+    file_name = dest.name
 
     def _download():
         req = urllib.request.Request(url, headers={"User-Agent": "ds-agent/0.1"})
