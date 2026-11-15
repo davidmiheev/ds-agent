@@ -163,7 +163,13 @@ async def _on_call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.
                 _fix_save_notebook_rest(arguments["request"]))
             LOG.info("save_notebook pushed via REST SaveKernel: %s",
                      res.get("ref") or res.get("url") or res)
-            return _text_result(res)
+            # REST answers camelCase; keep the MCP tool's snake_case keys.
+            out = {k: v for k, v in res.items()
+                   if k not in ("ref", "url", "versionNumber", "kernelId")}
+            out.update({"ref": res.get("ref"), "url": res.get("url"),
+                        "version_number": res.get("versionNumber"),
+                        "kernel_id": res.get("kernelId")})
+            return _text_result(out)
         except kaggle_batch.KaggleToolError as exc:
             return _text_result({"error": str(exc)}, is_error=True)
 
