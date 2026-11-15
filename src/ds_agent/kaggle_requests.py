@@ -13,18 +13,28 @@ _KERNEL_TYPES = {"script", "notebook"}
 _LANGUAGES = {"python", "r", "rmarkdown"}
 
 
+# Field names that do NOT follow the `xNullable` convention: the `*DataSources`
+# arrays (competition/dataset/kernel/model) and their `*Setter` twins, plus
+# `categoryIds`. Blindly suffixing them (competitionDataSourcesNullable) makes
+# Kaggle silently drop the link — e.g. a competition attached to the notebook.
+_PASSTHROUGH_SUFFIXES = ("DataSources", "Setter")
+_PASSTHROUGH_NAMES = {"categoryIds"}
+
+
 def _nullable_suffixed(request: dict[str, Any]) -> dict[str, Any]:
     """Rewrite plain field names to their `Nullable`-suffixed counterparts.
 
-    `hasXNullable`/`hasX`-style boolean flags and already-suffixed keys are
-    passed through unchanged; `None` values are dropped (Kaggle's schema
-    treats an omitted field and an explicit null the same way).
+    `hasXNullable`/`hasX`-style boolean flags, already-suffixed keys, and the
+    non-`Nullable` fields in `_PASSTHROUGH_*` are passed through unchanged;
+    `None` values are dropped (Kaggle's schema treats an omitted field and an
+    explicit null the same way).
     """
     out: dict[str, Any] = {}
     for k, v in request.items():
         if v is None:
             continue
-        if k.endswith("Nullable") or k.startswith("has"):
+        if (k.endswith("Nullable") or k.startswith("has")
+                or k.endswith(_PASSTHROUGH_SUFFIXES) or k in _PASSTHROUGH_NAMES):
             out[k] = v
         else:
             out[f"{k}Nullable"] = v

@@ -45,6 +45,25 @@ no_nulls = _nullable_suffixed({"newTitle": "x", "text": None})
 assert "textNullable" not in no_nulls
 print("None values dropped: OK ->", no_nulls)
 
+# The *DataSources arrays (and *Setter twins + categoryIds) do NOT take the
+# Nullable suffix upstream — suffixing them makes Kaggle silently drop a
+# competition/dataset link. They must pass through verbatim.
+sources = _fix_save_notebook({
+    "newTitle": "x", "text": "print(1)",
+    "competitionDataSources": ["titanic"],
+    "datasetDataSources": ["user/dataset-slug"],
+    "kernelDataSources": ["user/kernel-slug"],
+    "modelDataSources": ["user/model-slug"],
+    "categoryIds": ["code"],
+    "competitionDataSourcesSetter": ["titanic"],
+})
+for k in ("competitionDataSources", "datasetDataSources", "kernelDataSources",
+          "modelDataSources", "categoryIds", "competitionDataSourcesSetter"):
+    assert k in sources, f"{k} dropped or renamed: {sources}"
+    assert f"{k}Nullable" not in sources
+assert sources["competitionDataSources"] == ["titanic"]
+print("data-source fields (competition/dataset/kernel/model/categoryIds) pass through verbatim: OK ->", {k: sources[k] for k in ("competitionDataSources", "categoryIds")})
+
 
 # The upstream `npx mcp-remote` child must inherit proxy/CA settings: the mcp
 # SDK's default child env drops them, which behind a TLS-intercepting proxy
