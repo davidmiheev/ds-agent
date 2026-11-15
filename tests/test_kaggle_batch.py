@@ -138,6 +138,48 @@ def test_slug_clash_across_batches_and_cancel():
     assert res["kernel_session_id"] == 42
 
 
+def test_rest_push_with_data_sources():
+    """With KAGGLE_API_TOKEN set, _push uses the REST SaveKernel endpoint (which
+    honors *DataSources; the MCP shim drops them — Kaggle/kaggle-cli#1140)."""
+    _fresh_dir()
+    fk = FakeKaggle()
+    kb.create_batch("rest", [{"slug": "job-rest0", "script": "print(1)"}], owner="me",
+                    competitions=["gemma-4-developer-agent"], datasets=["uciml/iris"],
+                    kernel_sources="me/upstream-kernel", model_sources=["m/1"], **OPTS)
+    sent = {}
+
+    def fake_rest(req):
+        sent.update(req)
+        return {"ref": "/code/me/job-rest0", "versionNumber": 1, "kernelId": 1}
+
+    old_fn, old_tok = kb.rest_save_kernel, os.environ.get("KAGGLE_API_TOKEN")
+    kb.rest_save_kernel = fake_rest
+    os.environ["KAGGLE_API_TOKEN"] = "tok"
+    try:
+        _run(kb.step("rest", fk.call_tool, download=fk.download))
+        assert fk.pushed == [], "MCP save_notebook must not be used when the token is set"
+        assert sent["slug"] == "me/job-rest0" and sent["newTitle"] == "job-rest0"
+        assert sent["competitionDataSources"] == ["gemma-4-developer-agent"]
+        assert sent["datasetDataSources"] == ["uciml/iris"]
+        assert sent["kernelDataSources"] == ["me/upstream-kernel"]  # str coerced to list
+        assert sent["modelDataSources"] == ["m/1"]
+
+        # rejected sources surface as a push failure, not a silent mountless run
+        def reject_rest(req):
+            raise kb.KaggleToolError("Kaggle rejected sources: {'invalidCompetitionSources': ['x']}")
+        kb.rest_save_kernel = reject_rest
+        kb.create_batch("rest2", [{"slug": "job-rest2", "script": "print(1)"}], owner="me",
+                        competitions=["x"])
+        s = _run(kb.step("rest2", fk.call_tool, download=fk.download))
+        assert "push failed" in s["events"][-1], s
+    finally:
+        kb.rest_save_kernel = old_fn
+        if old_tok is None:
+            os.environ.pop("KAGGLE_API_TOKEN", None)
+        else:
+            os.environ["KAGGLE_API_TOKEN"] = old_tok
+
+
 def test_tool_dispatch():
     _fresh_dir()
     fk = FakeKaggle()

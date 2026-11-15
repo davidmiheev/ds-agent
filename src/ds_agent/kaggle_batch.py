@@ -82,6 +82,11 @@ DEFAULTS = {
     "deadline_regex": None,
     "private": True,
     "internet": True,
+    # data sources to attach at push time (slugs, e.g. ["gemma-4-developer-agent"])
+    "competitions": [],
+    "datasets": [],
+    "kernel_sources": [],
+    "model_sources": [],
 }
 
 
@@ -189,7 +194,8 @@ def create_batch(
     ``jobs``: ``[{"slug", "script" | "script_path", "out_dir"?, "meta"?}]``.
     ``options``: any of ``DEFAULTS`` (``max_running``, ``log_glob``,
     ``download_glob``, ``done_regex``, ``fail_regex``, ``deadline_regex``,
-    ``private``, ``internet``).
+    ``private``, ``internet``, ``competitions``, ``datasets``,
+    ``kernel_sources``, ``model_sources``).
     """
     unknown = set(options) - set(DEFAULTS)
     if unknown:
@@ -323,8 +329,58 @@ def _source(job: dict[str, Any]) -> str:
     return job["script"] if job["script"] is not None else Path(job["script_path"]).read_text()
 
 
+_REST_SAVE_URL = "https://api.kaggle.com/v1/kernels.KernelsApiService/SaveKernel"
+
+# batch option name -> ApiSaveKernelRequest field
+_SOURCE_OPTIONS = (("competitions", "competitionDataSources"),
+                   ("datasets", "datasetDataSources"),
+                   ("kernel_sources", "kernelDataSources"),
+                   ("model_sources", "modelDataSources"))
+
+
+def rest_save_kernel(request: dict[str, Any], token_env: str = "KAGGLE_API_TOKEN") -> dict[str, Any]:
+    """Push a kernel via the public REST endpoint (bypasses the MCP shim).
+
+    The hosted MCP ``save_notebook`` advertises the ``*DataSources`` fields but
+    silently drops them (Kaggle/kaggle-cli#1140); this endpoint honors them and
+    reports rejected sources in its ``invalid*Sources`` fields.
+    """
+    token = os.environ.get(token_env, "").strip()
+    if not token:
+        raise KaggleToolError(f"{token_env} not set")
+    req = urllib.request.Request(_REST_SAVE_URL, json.dumps(request).encode(),
+                                 {"Content-Type": "application/json",
+                                  "Authorization": f"Bearer {token}"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler(),
+                                         urllib.request.HTTPSHandler(context=_ssl_context()))
+    try:
+        res = json.loads(opener.open(req, timeout=180).read().decode())
+    except urllib.error.HTTPError as exc:
+        raise KaggleToolError(f"SaveKernel HTTP {exc.code}: {exc.read().decode()[:500]}")
+    if res.get("error"):
+        raise KaggleToolError(str(res["error"])[:500])
+    invalid = {k: v for k, v in res.items() if k.startswith("invalid") and v}
+    if invalid:
+        raise KaggleToolError(f"Kaggle rejected sources: {invalid}")
+    return res
+
+
 async def _push(call_tool: CallTool, batch: dict[str, Any], job: dict[str, Any]) -> None:
     opts = batch["options"]
+    if os.environ.get("KAGGLE_API_TOKEN", "").strip():
+        # REST path: plain ApiSaveKernelRequest fields, real data-source support.
+        req = {"slug": f"{batch['owner']}/{job['slug']}", "newTitle": job["slug"],
+               "text": _source(job), "kernelType": "script", "language": "python",
+               "isPrivate": bool(opts["private"]), "enableInternet": bool(opts["internet"]),
+               "enableGpu": False, "kernelExecutionType": "SaveAndRunAll"}
+        for opt, field in _SOURCE_OPTIONS:
+            src = opts.get(opt)
+            if src:
+                req[field] = [src] if isinstance(src, str) else list(src)
+        res = await asyncio.to_thread(rest_save_kernel, req)
+        job["kernel_session_id"] = _session_id(res)
+        job["push_response"] = json.dumps(res)[:400]
+        return
     req = _fix_save_notebook({
         "slug": f"{batch['owner']}/{job['slug']}", "newTitle": job["slug"], "text": _source(job),
         "kernelType": "script", "language": "python", "isPrivate": bool(opts["private"]),
@@ -582,7 +638,15 @@ TOOLS: list[dict[str, Any]] = [
          "max_running": {"type": "integer"}, "log_glob": {"type": "string"},
          "download_glob": {"type": "string"}, "done_regex": {"type": "string"},
          "fail_regex": {"type": "string"}, "deadline_regex": {"type": "string"},
-         "private": {"type": "boolean"}, "internet": {"type": "boolean"}},
+         "private": {"type": "boolean"}, "internet": {"type": "boolean"},
+         "competitions": {"type": "array", "items": {"type": "string"},
+                          "description": "competition slugs whose data mounts under /kaggle/input"},
+         "datasets": {"type": "array", "items": {"type": "string"},
+                      "description": "dataset refs ('owner/slug') to mount"},
+         "kernel_sources": {"type": "array", "items": {"type": "string"},
+                            "description": "kernel refs ('owner/slug') to mount"},
+         "model_sources": {"type": "array", "items": {"type": "string"},
+                           "description": "model variation refs to mount"}},
          "required": ["name", "owner", "jobs"]}},
     {"name": "batch_step",
      "description": "Advance a batch: refresh running notebooks, download and check the outputs of finished "
