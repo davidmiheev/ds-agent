@@ -112,12 +112,15 @@ async def _ensure_upstream() -> ClientSession:
 # re-exported here for existing imports.
 try:  # package import (ds-agent: python -m ds_agent.kaggle_mcp)
     from . import kaggle_batch
-    from .kaggle_requests import _REQUEST_FIXERS, _fix_save_notebook, _nullable_suffixed
+    from .kaggle_requests import (_REQUEST_FIXERS, _fix_save_notebook,
+                                  _fix_save_notebook_rest, _nullable_suffixed)
 except ImportError:  # flat import (a vendored copy run as a script)
     import kaggle_batch  # type: ignore[no-redef]
-    from kaggle_requests import _REQUEST_FIXERS, _fix_save_notebook, _nullable_suffixed  # type: ignore[no-redef]
+    from kaggle_requests import (_REQUEST_FIXERS, _fix_save_notebook,
+                                 _fix_save_notebook_rest, _nullable_suffixed)  # type: ignore[no-redef]
 
-__all__ = ["_REQUEST_FIXERS", "_fix_save_notebook", "_nullable_suffixed", "kaggle_batch"]
+__all__ = ["_REQUEST_FIXERS", "_fix_save_notebook", "_fix_save_notebook_rest",
+           "_nullable_suffixed", "kaggle_batch"]
 
 
 async def _on_list_tools(ctx: Any, params: Any) -> types.ListToolsResult:
@@ -148,6 +151,21 @@ async def _on_call_tool(ctx: Any, params: types.CallToolRequestParams) -> types.
             return _text_result(await kaggle_batch.dispatch(name, arguments, session.call_tool))
         except (kaggle_batch.BatchError, kaggle_batch.KaggleToolError, KeyError) as exc:
             return _text_result({"error": f"{type(exc).__name__}: {exc}"}, is_error=True)
+
+    if (name == "save_notebook" and kaggle_batch._rest_token()
+            and isinstance(arguments.get("request"), dict)):
+        # Route around the MCP shim: it accepts the *DataSources fields but
+        # silently drops them (Kaggle/kaggle-cli#1140), and its response hides
+        # the invalid*Sources rejections — the REST endpoint does neither.
+        try:
+            res = await asyncio.to_thread(
+                kaggle_batch.rest_save_kernel,
+                _fix_save_notebook_rest(arguments["request"]))
+            LOG.info("save_notebook pushed via REST SaveKernel: %s",
+                     res.get("ref") or res.get("url") or res)
+            return _text_result(res)
+        except kaggle_batch.KaggleToolError as exc:
+            return _text_result({"error": str(exc)}, is_error=True)
 
     fixer = _REQUEST_FIXERS.get(name)
     if fixer and isinstance(arguments.get("request"), dict):

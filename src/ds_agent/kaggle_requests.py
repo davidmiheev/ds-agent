@@ -59,6 +59,38 @@ def _fix_save_notebook(request: dict[str, Any]) -> dict[str, Any]:
     return req
 
 
+def _fix_save_notebook_rest(request: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a `save_notebook` request for the REST SaveKernel endpoint.
+
+    The REST proto takes plain `ApiSaveKernelRequest` field names — the MCP
+    schema's `*Nullable` suffixes and `has*` flags would be ignored there, so
+    they are mapped back to their plain names (an explicit plain key wins over
+    its `Nullable` twin). kernelType/language get the same auto-correction as
+    `_fix_save_notebook`.
+    """
+    out: dict[str, Any] = {}
+    for k, v in request.items():
+        if v is None:
+            continue
+        if k.endswith("Nullable"):
+            out.setdefault(k[: -len("Nullable")], v)
+        elif len(k) > 3 and k.startswith("has") and k[3].isupper():
+            continue  # presence flag — implied by the plain field itself
+        else:
+            out[k] = v
+    kernel_type = out.get("kernelType")
+    language = out.get("language")
+    if isinstance(kernel_type, str) and kernel_type.lower() in _LANGUAGES and kernel_type.lower() not in _KERNEL_TYPES:
+        if not isinstance(language, str) or language.lower() not in _LANGUAGES:
+            out["language"] = kernel_type.lower()
+        out["kernelType"] = "script"
+    elif kernel_type is None:
+        out["kernelType"] = "script"
+    if not isinstance(out.get("language"), str) or out["language"].lower() not in _LANGUAGES:
+        out["language"] = "python"
+    return out
+
+
 # Tool name -> function that rewrites its `request` argument before forwarding.
 _REQUEST_FIXERS = {
     "save_notebook": _fix_save_notebook,
