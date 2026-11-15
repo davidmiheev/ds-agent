@@ -338,16 +338,27 @@ _SOURCE_OPTIONS = (("competitions", "competitionDataSources"),
                    ("model_sources", "modelDataSources"))
 
 
-def rest_save_kernel(request: dict[str, Any], token_env: str = "KAGGLE_API_TOKEN") -> dict[str, Any]:
+# env vars holding the Kaggle API bearer token, tried in order
+_TOKEN_ENVS = ("KAGGLE_API_TOKEN", "KAGGLE_MCP_TOKEN")
+
+
+def _rest_token() -> str:
+    for env in _TOKEN_ENVS:
+        if t := os.environ.get(env, "").strip():
+            return t
+    return ""
+
+
+def rest_save_kernel(request: dict[str, Any]) -> dict[str, Any]:
     """Push a kernel via the public REST endpoint (bypasses the MCP shim).
 
     The hosted MCP ``save_notebook`` advertises the ``*DataSources`` fields but
     silently drops them (Kaggle/kaggle-cli#1140); this endpoint honors them and
     reports rejected sources in its ``invalid*Sources`` fields.
     """
-    token = os.environ.get(token_env, "").strip()
+    token = _rest_token()
     if not token:
-        raise KaggleToolError(f"{token_env} not set")
+        raise KaggleToolError(f"none of {_TOKEN_ENVS} set")
     req = urllib.request.Request(_REST_SAVE_URL, json.dumps(request).encode(),
                                  {"Content-Type": "application/json",
                                   "Authorization": f"Bearer {token}"})
@@ -367,7 +378,7 @@ def rest_save_kernel(request: dict[str, Any], token_env: str = "KAGGLE_API_TOKEN
 
 async def _push(call_tool: CallTool, batch: dict[str, Any], job: dict[str, Any]) -> None:
     opts = batch["options"]
-    if os.environ.get("KAGGLE_API_TOKEN", "").strip():
+    if _rest_token():
         # REST path: plain ApiSaveKernelRequest fields, real data-source support.
         req = {"slug": f"{batch['owner']}/{job['slug']}", "newTitle": job["slug"],
                "text": _source(job), "kernelType": "script", "language": "python",
@@ -378,18 +389,22 @@ async def _push(call_tool: CallTool, batch: dict[str, Any], job: dict[str, Any])
             if src:
                 req[field] = [src] if isinstance(src, str) else list(src)
         res = await asyncio.to_thread(rest_save_kernel, req)
-        job["kernel_session_id"] = _session_id(res)
-        job["push_response"] = json.dumps(res)[:400]
-        return
-    req = _fix_save_notebook({
-        "slug": f"{batch['owner']}/{job['slug']}", "newTitle": job["slug"], "text": _source(job),
-        "kernelType": "script", "language": "python", "isPrivate": bool(opts["private"]),
-        "enableInternet": bool(opts["internet"]), "enableGpu": False,
-        "kernelExecutionType": "SaveAndRunAll",
-    })
-    res = _payload(await call_tool("save_notebook", {"request": req}))
-    if isinstance(res, dict) and res.get("error"):
-        raise KaggleToolError(str(res["error"])[:500])
+    elif any(opts.get(opt) for opt, _ in _SOURCE_OPTIONS):
+        # sources requested but only the MCP path is reachable — it would
+        # silently drop them; fail the push instead of a mountless run.
+        raise KaggleToolError(
+            "data-source options need a Kaggle API token for the REST endpoint "
+            f"(set one of {_TOKEN_ENVS}); the MCP save_notebook drops them")
+    else:
+        req = _fix_save_notebook({
+            "slug": f"{batch['owner']}/{job['slug']}", "newTitle": job["slug"], "text": _source(job),
+            "kernelType": "script", "language": "python", "isPrivate": bool(opts["private"]),
+            "enableInternet": bool(opts["internet"]), "enableGpu": False,
+            "kernelExecutionType": "SaveAndRunAll",
+        })
+        res = _payload(await call_tool("save_notebook", {"request": req}))
+        if isinstance(res, dict) and res.get("error"):
+            raise KaggleToolError(str(res["error"])[:500])
     job["kernel_session_id"] = _session_id(res)
     job["push_response"] = (json.dumps(res) if not isinstance(res, str) else res)[:400]
 
