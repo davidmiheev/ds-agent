@@ -33,6 +33,10 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
 # Public-host hardening flag. When "1" the cookie is Secure and a real password
 # is required; the can_use_tool callback also tightens tool approvals.
 APP_PUBLIC = os.environ.get("APP_PUBLIC", "0") == "1"
+APP_TRUSTED_PROXIES = os.environ.get("APP_TRUSTED_PROXIES", "")
+APP_SESSION_TTL_SECONDS = int(os.environ.get("APP_SESSION_TTL_SECONDS", "86400"))
+if APP_SESSION_TTL_SECONDS <= 0:
+    raise ValueError("APP_SESSION_TTL_SECONDS must be positive")
 
 # Session backend. local (default) = bare subprocess. docker = per-session container.
 SESSION_BACKEND = os.environ.get("SESSION_BACKEND", "local")

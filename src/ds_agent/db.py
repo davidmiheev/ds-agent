@@ -96,6 +96,7 @@ def make_cookie_token() -> str:
     import secrets
     tok = secrets.token_urlsafe(32)
     with conn() as c:
+        c.execute("DELETE FROM auth_cookies WHERE created_at<=?", (time.time() - core.APP_SESSION_TTL_SECONDS,))
         c.execute("INSERT INTO auth_cookies (token, created_at) VALUES (?, ?)", (tok, time.time()))
     return tok
 
@@ -108,7 +109,15 @@ def check_cookie(tok: str) -> bool:
     if not tok:
         return False
     with conn() as c:
-        return c.execute("SELECT 1 FROM auth_cookies WHERE token=?", (tok,)).fetchone() is not None
+        return c.execute(
+            "SELECT 1 FROM auth_cookies WHERE token=? AND created_at>?",
+            (tok, time.time() - core.APP_SESSION_TTL_SECONDS),
+        ).fetchone() is not None
+
+
+def delete_cookie_token(tok: str) -> None:
+    with conn() as c:
+        c.execute("DELETE FROM auth_cookies WHERE token=?", (tok,))
 
 
 # ---- Telegram OTP web login ----
