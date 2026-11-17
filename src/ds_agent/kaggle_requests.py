@@ -13,18 +13,28 @@ _KERNEL_TYPES = {"script", "notebook"}
 _LANGUAGES = {"python", "r", "rmarkdown"}
 
 
+# Field names that do NOT follow the `xNullable` convention: the `*DataSources`
+# arrays (competition/dataset/kernel/model) and their `*Setter` twins, plus
+# `categoryIds`. Blindly suffixing them (competitionDataSourcesNullable) makes
+# Kaggle silently drop the link — e.g. a competition attached to the notebook.
+_PASSTHROUGH_SUFFIXES = ("DataSources", "Setter")
+_PASSTHROUGH_NAMES = {"categoryIds"}
+
+
 def _nullable_suffixed(request: dict[str, Any]) -> dict[str, Any]:
     """Rewrite plain field names to their `Nullable`-suffixed counterparts.
 
-    `hasXNullable`/`hasX`-style boolean flags and already-suffixed keys are
-    passed through unchanged; `None` values are dropped (Kaggle's schema
-    treats an omitted field and an explicit null the same way).
+    `hasXNullable`/`hasX`-style boolean flags, already-suffixed keys, and the
+    non-`Nullable` fields in `_PASSTHROUGH_*` are passed through unchanged;
+    `None` values are dropped (Kaggle's schema treats an omitted field and an
+    explicit null the same way).
     """
     out: dict[str, Any] = {}
     for k, v in request.items():
         if v is None:
             continue
-        if k.endswith("Nullable") or k.startswith("has"):
+        if (k.endswith("Nullable") or k.startswith("has")
+                or k.endswith(_PASSTHROUGH_SUFFIXES) or k in _PASSTHROUGH_NAMES):
             out[k] = v
         else:
             out[f"{k}Nullable"] = v
@@ -47,6 +57,38 @@ def _fix_save_notebook(request: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(req.get("languageNullable"), str) or req["languageNullable"].lower() not in _LANGUAGES:
         req["languageNullable"] = "python"
     return req
+
+
+def _fix_save_notebook_rest(request: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a `save_notebook` request for the REST SaveKernel endpoint.
+
+    The REST proto takes plain `ApiSaveKernelRequest` field names — the MCP
+    schema's `*Nullable` suffixes and `has*` flags would be ignored there, so
+    they are mapped back to their plain names (an explicit plain key wins over
+    its `Nullable` twin). kernelType/language get the same auto-correction as
+    `_fix_save_notebook`.
+    """
+    out: dict[str, Any] = {}
+    for k, v in request.items():
+        if v is None:
+            continue
+        if k.endswith("Nullable"):
+            out.setdefault(k[: -len("Nullable")], v)
+        elif len(k) > 3 and k.startswith("has") and k[3].isupper():
+            continue  # presence flag — implied by the plain field itself
+        else:
+            out[k] = v
+    kernel_type = out.get("kernelType")
+    language = out.get("language")
+    if isinstance(kernel_type, str) and kernel_type.lower() in _LANGUAGES and kernel_type.lower() not in _KERNEL_TYPES:
+        if not isinstance(language, str) or language.lower() not in _LANGUAGES:
+            out["language"] = kernel_type.lower()
+        out["kernelType"] = "script"
+    elif kernel_type is None:
+        out["kernelType"] = "script"
+    if not isinstance(out.get("language"), str) or out["language"].lower() not in _LANGUAGES:
+        out["language"] = "python"
+    return out
 
 
 # Tool name -> function that rewrites its `request` argument before forwarding.

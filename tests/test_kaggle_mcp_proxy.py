@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from ds_agent.kaggle_mcp import _fix_save_notebook, _nullable_suffixed
+from ds_agent.kaggle_mcp import _fix_save_notebook, _fix_save_notebook_rest, _nullable_suffixed
 
 # The exact naive call an unguided model makes: plain names, and a language
 # name mistakenly used as the kernel type.
@@ -44,6 +44,49 @@ print("omitted fields defaulted: OK ->", defaulted)
 no_nulls = _nullable_suffixed({"newTitle": "x", "text": None})
 assert "textNullable" not in no_nulls
 print("None values dropped: OK ->", no_nulls)
+
+# The *DataSources arrays (and *Setter twins + categoryIds) do NOT take the
+# Nullable suffix upstream — suffixing them makes Kaggle silently drop a
+# competition/dataset link. They must pass through verbatim.
+sources = _fix_save_notebook({
+    "newTitle": "x", "text": "print(1)",
+    "competitionDataSources": ["titanic"],
+    "datasetDataSources": ["user/dataset-slug"],
+    "kernelDataSources": ["user/kernel-slug"],
+    "modelDataSources": ["user/model-slug"],
+    "categoryIds": ["code"],
+    "competitionDataSourcesSetter": ["titanic"],
+})
+for k in ("competitionDataSources", "datasetDataSources", "kernelDataSources",
+          "modelDataSources", "categoryIds", "competitionDataSourcesSetter"):
+    assert k in sources, f"{k} dropped or renamed: {sources}"
+    assert f"{k}Nullable" not in sources
+assert sources["competitionDataSources"] == ["titanic"]
+print("data-source fields (competition/dataset/kernel/model/categoryIds) pass through verbatim: OK ->", {k: sources[k] for k in ("competitionDataSources", "categoryIds")})
+
+
+# REST path (used when an API token is set — the MCP shim drops *DataSources,
+# Kaggle/kaggle-cli#1140): plain names, *Nullable keys mapped back (plain wins),
+# has* flags dropped, same kernelType/language correction.
+rest = _fix_save_notebook_rest({
+    "newTitle": "x", "newTitleNullable": "should-lose", "textNullable": "print(1)",
+    "kernelType": "python", "isPrivateNullable": True,
+    "hasNewTitle": True, "hasIsPrivate": True,
+    "competitionDataSources": ["titanic"], "datasetDataSources": ["u/d"],
+})
+assert rest == {
+    "newTitle": "x", "text": "print(1)", "isPrivate": True,
+    "kernelType": "script", "language": "python",
+    "competitionDataSources": ["titanic"], "datasetDataSources": ["u/d"],
+}, rest
+print("REST save_notebook request normalized (Nullable un-suffixed, has* dropped): OK ->", rest)
+
+rest_nb = _fix_save_notebook_rest({"textNullable": "x", "kernelTypeNullable": "notebook",
+                                   "languageNullable": "r"})
+assert rest_nb["kernelType"] == "notebook" and rest_nb["language"] == "r"
+rest_min = _fix_save_notebook_rest({"newTitle": "x"})
+assert rest_min["kernelType"] == "script" and rest_min["language"] == "python"
+print("REST fixer keeps valid kernelType/language and defaults missing ones: OK")
 
 
 # The upstream `npx mcp-remote` child must inherit proxy/CA settings: the mcp

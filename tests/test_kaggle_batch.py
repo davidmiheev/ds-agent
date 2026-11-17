@@ -138,6 +138,76 @@ def test_slug_clash_across_batches_and_cancel():
     assert res["kernel_session_id"] == 42
 
 
+def test_rest_push_with_data_sources():
+    """With KAGGLE_API_TOKEN set, _push uses the REST SaveKernel endpoint (which
+    honors *DataSources; the MCP shim drops them — Kaggle/kaggle-cli#1140)."""
+    _fresh_dir()
+    fk = FakeKaggle()
+    kb.create_batch("rest", [{"slug": "job-rest0", "script": "print(1)"}], owner="me",
+                    competitions=["gemma-4-developer-agent"], datasets=["uciml/iris"],
+                    kernel_sources="me/upstream-kernel", model_sources=["m/1"], **OPTS)
+    sent = {}
+
+    def fake_rest(req):
+        sent.update(req)
+        return {"ref": "/code/me/job-rest0", "versionNumber": 1, "kernelId": 1}
+
+    old_fn, old_tok, old_mcp_tok = (kb.rest_save_kernel, os.environ.get("KAGGLE_API_TOKEN"),
+                                  os.environ.get("KAGGLE_MCP_TOKEN"))
+    kb.rest_save_kernel = fake_rest
+    os.environ["KAGGLE_API_TOKEN"] = "tok"
+    try:
+        _run(kb.step("rest", fk.call_tool, download=fk.download))
+        assert fk.pushed == [], "MCP save_notebook must not be used when the token is set"
+        assert sent["slug"] == "me/job-rest0" and sent["newTitle"] == "job-rest0"
+        assert sent["competitionDataSources"] == ["gemma-4-developer-agent"]
+        assert sent["datasetDataSources"] == ["uciml/iris"]
+        assert sent["kernelDataSources"] == ["me/upstream-kernel"]  # str coerced to list
+        assert sent["modelDataSources"] == ["m/1"]
+
+        # rejected sources surface as a push failure, not a silent mountless run
+        def reject_rest(req):
+            raise kb.KaggleToolError("Kaggle rejected sources: {'invalidCompetitionSources': ['x']}")
+        kb.rest_save_kernel = reject_rest
+        kb.create_batch("rest2", [{"slug": "job-rest2", "script": "print(1)"}], owner="me",
+                        competitions=["x"])
+        s = _run(kb.step("rest2", fk.call_tool, download=fk.download))
+        assert "push failed" in s["events"][-1], s
+
+        # the MCP-only token also unlocks the REST path (same bearer credential)
+        os.environ.pop("KAGGLE_API_TOKEN")
+        os.environ["KAGGLE_MCP_TOKEN"] = "tok2"
+        kb.rest_save_kernel = fake_rest
+        sent.clear()
+        kb.create_batch("rest3", [{"slug": "job-rest3", "script": "print(1)"}], owner="me",
+                        competitions=["titanic"], replace=True)
+        _run(kb.step("rest3", fk.call_tool, download=fk.download))
+        assert sent["competitionDataSources"] == ["titanic"]
+    finally:
+        kb.rest_save_kernel = old_fn
+        if old_mcp_tok is None:
+            os.environ.pop("KAGGLE_MCP_TOKEN", None)
+        else:
+            os.environ["KAGGLE_MCP_TOKEN"] = old_mcp_tok
+        if old_tok is None:
+            os.environ.pop("KAGGLE_API_TOKEN", None)
+        else:
+            os.environ["KAGGLE_API_TOKEN"] = old_tok
+
+    # sources requested with no REST token at all -> fail closed, never mountless
+    _fresh_dir()
+    fk2 = FakeKaggle()
+    saved = {e: os.environ.pop(e, None) for e in kb._TOKEN_ENVS}
+    try:
+        kb.create_batch("rest4", [{"slug": "job-rest4", "script": "print(1)"}], owner="me",
+                        competitions=["titanic"])
+        s = _run(kb.step("rest4", fk2.call_tool, download=fk2.download))
+        assert "push failed" in s["events"][-1] and "token" in s["events"][-1], s
+        assert fk2.pushed == []
+    finally:
+        os.environ.update({e: v for e, v in saved.items() if v is not None})
+
+
 def test_tool_dispatch():
     _fresh_dir()
     fk = FakeKaggle()
