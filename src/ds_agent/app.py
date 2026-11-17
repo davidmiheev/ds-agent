@@ -51,6 +51,18 @@ async def _startup_tasks() -> None:
     if vast_key and not crypto.load_key("vast"):
         crypto.save_key("vast", vast_key, label="Vast.ai API Key (env)")
 
+    # First-run: seed the session MCP config from the repo's mcp.json so
+    # spawned sessions get MCP tools without a manual Settings > MCP save.
+    # A user-saved config always wins — only seeds when the file is absent.
+    repo_mcp = core.PROJECT_ROOT / "mcp.json"
+    if not core.MCP_CONFIG_PATH.exists() and repo_mcp.exists():
+        try:
+            cfg = json.loads(repo_mcp.read_text())
+            if isinstance(cfg.get("mcpServers"), dict) and cfg["mcpServers"]:
+                write_private(core.MCP_CONFIG_PATH, json.dumps(cfg, indent=2))
+        except (OSError, json.JSONDecodeError):
+            pass
+
     # Pre-fetch OpenRouter models & pricing into cache
     asyncio.create_task(model_catalog.openrouter_live_models())
 
