@@ -692,6 +692,9 @@ def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                 try:
                     client.unassign(prev.endpoint)
                     _state["store"].remove(prev.name)
+                    # The released runtime can't be resumed — drop its resume
+                    # file or a restart would resurrect a dead endpoint.
+                    _resume_path(prev).unlink(missing_ok=True)
                     released_prev = prev.endpoint
                 except Exception:
                     LOG.warning("could not release previous runtime %s", prev.endpoint)

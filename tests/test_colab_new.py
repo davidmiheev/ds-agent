@@ -2,6 +2,7 @@
 import asyncio
 import json
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -33,8 +34,13 @@ async def test_new_releases_previous_runtime():
     client = Mock()
     client.assign.return_value = _assign_result()
     store = Mock()
+    store.path = str(Path(tempfile.mkdtemp()) / "sessions.json")
     old_runtime = Mock()
     _reset_state(client=client, store=store, active_session=prev, runtime=old_runtime)
+
+    resume_file = cs._resume_path(prev)
+    resume_file.parent.mkdir(parents=True, exist_ok=True)
+    resume_file.write_text("{}")
 
     result = await cs.call_tool("colab_new", {})
     out = json.loads(result[0].text)
@@ -46,6 +52,7 @@ async def test_new_releases_previous_runtime():
     client.unassign.assert_called_once_with("old-endpoint")  # remote released
     store.remove.assert_called_once_with("old")    # dropped from session store
     store.add.assert_called_once()                 # new session stored
+    assert not resume_file.exists()                # released runtime can't resume
     assert cs._state["active_session"].endpoint == "new-endpoint"
     assert cs._state["runtime"] is None            # lazy init, not a leaked ref
     print("test_new_releases_previous_runtime: OK")
@@ -56,6 +63,7 @@ async def test_new_with_no_previous():
     client = Mock()
     client.assign.return_value = _assign_result()
     store = Mock()
+    store.path = str(Path(tempfile.mkdtemp()) / "sessions.json")
     store.list.return_value = {}
     _reset_state(client=client, store=store)
 
@@ -75,6 +83,7 @@ async def test_new_does_not_release_foreign_session():
     client = Mock()
     client.assign.return_value = _assign_result()
     store = Mock()
+    store.path = str(Path(tempfile.mkdtemp()) / "sessions.json")
     store.list.return_value = {"foreign": foreign}
     _reset_state(client=client, store=store)   # active_session=None, runtime=None
 
@@ -95,6 +104,7 @@ async def test_new_survives_unassign_failure():
     client.assign.return_value = _assign_result()
     client.unassign.side_effect = RuntimeError("remote refused")
     store = Mock()
+    store.path = str(Path(tempfile.mkdtemp()) / "sessions.json")
     _reset_state(client=client, store=store, active_session=prev, runtime=Mock())
 
     result = await cs.call_tool("colab_new", {})
@@ -113,6 +123,7 @@ async def test_new_failed_assign_keeps_previous():
     client = Mock()
     client.assign.side_effect = RuntimeError("quota")
     store = Mock()
+    store.path = str(Path(tempfile.mkdtemp()) / "sessions.json")
     old_runtime = Mock()
     _reset_state(client=client, store=store, active_session=prev, runtime=old_runtime)
 
