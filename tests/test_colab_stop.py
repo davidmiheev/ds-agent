@@ -2,6 +2,7 @@
 import asyncio
 import json
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -23,6 +24,7 @@ async def test_stop():
                 raise RuntimeError("remote refused")
         client.unassign.side_effect = unassign
         store.remove.side_effect = lambda name: events.append(("remove", name))
+        store.path = str(Path(tempfile.mkdtemp()) / "sessions.json")
         cs._state.update(active_session=session, runtime=runtime, store=store)
         with patch.object(cs, "_get_client", return_value=client):
             result = await cs.call_tool("colab_stop", {})
