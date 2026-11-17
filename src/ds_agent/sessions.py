@@ -550,7 +550,10 @@ async def _run_turn_engine(active: ActiveSession) -> None:
             if payload.get("type") == "assistant":
                 payload = _rewrite_assistant(payload, workspace=active.workspace)
             if payload.get("type") == "result":
-                _record_result_usage(active.session_id, item)
+                cost = _record_result_usage(active.session_id, item)
+                # The SDK's total_cost_usd is an Anthropic-priced estimate;
+                # surface the catalog-priced figure (esp. for :free models).
+                payload["total_cost_usd"] = cost
                 active.turn_active = False
                 active.turn_done.set()
             _broadcast(active, payload)
@@ -614,7 +617,7 @@ async def stream_events(active: ActiveSession) -> Any:
         yield item
 
 
-def _record_result_usage(sid: str, msg: Any) -> None:
+def _record_result_usage(sid: str, msg: Any) -> float:
     """Pull cache + cost stats out of the SDK's ResultMessage and store in DB.
 
     Calculates accurate cost based on real per-model token pricing from
@@ -625,6 +628,7 @@ def _record_result_usage(sid: str, msg: Any) -> None:
     total_in = total_out = total_cache_read = total_cache_create = 0
     total_cost = 0.0
 
+    priced_from_catalog = False
     for m_name, u in model_usage.items():
         try:
             in_t = int(u.get("inputTokens") or 0)
@@ -639,6 +643,7 @@ def _record_result_usage(sid: str, msg: Any) -> None:
             # Check if we have exact per-token pricing from OpenRouter/provider catalog
             pricing = model_catalog.get_model_pricing(m_name)
             if pricing:
+                priced_from_catalog = True
                 prompt_rate = float(pricing.get("prompt") or 0)
                 completion_rate = float(pricing.get("completion") or 0)
                 cache_read_rate = float(pricing.get("input_cache_read") or (prompt_rate * 0.1))
@@ -656,8 +661,13 @@ def _record_result_usage(sid: str, msg: Any) -> None:
         except Exception:
             pass
 
-    # If no catalog pricing was matched, fallback to SDK's reported total_cost_usd
-    if total_cost <= 0.0 and getattr(msg, "total_cost_usd", None) is not None:
+    # If no catalog pricing was matched, fallback to SDK's reported total_cost_usd.
+    # Don't fall back when pricing WAS found but computes to $0 — free models
+    # (e.g. OpenRouter :free ids) legitimately cost nothing, and the SDK's
+    # total_cost_usd is an Anthropic-priced estimate that would wrongly
+    # attribute real spend to them.
+    if (not priced_from_catalog and total_cost <= 0.0
+            and getattr(msg, "total_cost_usd", None) is not None):
         total_cost = float(msg.total_cost_usd)
 
     cache_hit_pct = (total_cache_read * 100 // (total_in + total_cache_read + 1)) if (total_in or total_cache_read) else 0
@@ -672,6 +682,7 @@ def _record_result_usage(sid: str, msg: Any) -> None:
         "duration_ms": getattr(msg, "duration_ms", 0),
         "model_usage": {k: dict(v) for k, v in model_usage.items()},
     })
+    return total_cost
 
 
 async def _steer_pump(active: ActiveSession) -> None:
