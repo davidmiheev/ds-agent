@@ -152,7 +152,8 @@ def test_rest_push_with_data_sources():
         sent.update(req)
         return {"ref": "/code/me/job-rest0", "versionNumber": 1, "kernelId": 1}
 
-    old_fn, old_tok = kb.rest_save_kernel, os.environ.get("KAGGLE_API_TOKEN")
+    old_fn, old_tok, old_mcp_tok = (kb.rest_save_kernel, os.environ.get("KAGGLE_API_TOKEN"),
+                                  os.environ.get("KAGGLE_MCP_TOKEN"))
     kb.rest_save_kernel = fake_rest
     os.environ["KAGGLE_API_TOKEN"] = "tok"
     try:
@@ -184,7 +185,10 @@ def test_rest_push_with_data_sources():
         assert sent["competitionDataSources"] == ["titanic"]
     finally:
         kb.rest_save_kernel = old_fn
-        os.environ.pop("KAGGLE_MCP_TOKEN", None)
+        if old_mcp_tok is None:
+            os.environ.pop("KAGGLE_MCP_TOKEN", None)
+        else:
+            os.environ["KAGGLE_MCP_TOKEN"] = old_mcp_tok
         if old_tok is None:
             os.environ.pop("KAGGLE_API_TOKEN", None)
         else:
