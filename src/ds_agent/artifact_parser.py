@@ -14,6 +14,7 @@ import base64
 import mimetypes
 import re
 from pathlib import Path
+from .workspace_files import artifact_path
 
 ARTIFACT_RE = re.compile(r"^[ \t`]*__ARTIFACT__:([\w-]+):(.+?)\s*$", re.MULTILINE)
 
@@ -51,12 +52,8 @@ def rewrite_tool_result_content(text: str, workspace: Path | None = None) -> str
 
     def _repl(m: re.Match) -> str:
         kind, path = m.group(1), m.group(2).strip().strip("`").strip()
-        p = Path(path)
-        if (not p.exists() or not p.is_file()) and workspace is not None:
-            cand = Path(workspace) / p.name
-            if cand.exists() and cand.is_file():
-                p = cand
-        if not p.exists() or not p.is_file():
+        p = artifact_path(path, workspace)
+        if p is None:
             return f"\n[artifact missing: {path}]\n"
         try:
             data = p.read_bytes()

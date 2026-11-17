@@ -17,6 +17,7 @@ import os
 import secrets
 from cryptography.fernet import Fernet, InvalidToken
 from . import core
+from .workspace_files import write_private
 
 logger = logging.getLogger("ds_agent.crypto")
 PLAIN_PATH = core.DATA_DIR / "keys.json"  # legacy/plaintext fallback
@@ -40,12 +41,7 @@ def _get_or_create_vault_secret() -> str:
     # Generate new random 32-byte hex secret and store with chmod 600
     new_secret = secrets.token_hex(32)
     try:
-        vault_key_file.parent.mkdir(parents=True, exist_ok=True)
-        vault_key_file.write_text(new_secret)
-        try:
-            os.chmod(vault_key_file, 0o600)
-        except Exception:
-            pass
+        write_private(vault_key_file, new_secret)
         return new_secret
     except Exception as e:
         logger.warning("Could not persist vault key to %s: %s", vault_key_file, e)
@@ -106,12 +102,7 @@ def _read_all() -> dict:
 
 def _write_all(d: dict) -> None:
     f = _fernet()
-    core.KEYS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    core.KEYS_PATH.write_bytes(f.encrypt(json.dumps(d).encode()))
-    try:
-        os.chmod(core.KEYS_PATH, 0o600)
-    except Exception:
-        pass
+    write_private(core.KEYS_PATH, f.encrypt(json.dumps(d).encode()))
 
 
 def save_key(provider: str, key: str, base_url: str | None = None, label: str | None = None) -> None:

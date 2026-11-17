@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import core, db, sessions
+from .workspace_files import workspace_path
 
 _SNIPPET_RADIUS = 80
 
@@ -55,9 +56,7 @@ def search_sessions(query: str, max_sessions: int = 20, max_matches_per_session:
             for p in workspace.rglob("*"):
                 if not p.is_file():
                     continue
-                if p.name in core.WORKSPACE_SECRET_FILES:
-                    continue
-                if any(part in core.WORKSPACE_SECRET_DIRS for part in p.relative_to(workspace).parts[:-1]):
+                if workspace_path(p, workspace) is None:
                     continue
                 if q in p.name.lower():
                     artifact_matches.append(p.relative_to(workspace).as_posix())
