@@ -759,8 +759,11 @@ async def _handle_document_upload(api: TelegramAPI, chat_id: int, user_id: int, 
         await api.send_message(chat_id, "❌ Active session not found.")
         return
 
+    # Land uploads in data/ — the same place the web UI puts datasets and the
+    # path the system prompt tells the agent to look in.
     ws_dir = Path(row["workspace"])
-    ws_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = ws_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
 
     file_id = doc.get("file_id")
     raw_name = doc.get("file_name") or f"uploaded_file_{os.urandom(4).hex()}"
@@ -779,7 +782,15 @@ async def _handle_document_upload(api: TelegramAPI, chat_id: int, user_id: int, 
         await api.send_message(chat_id, f"❌ Failed to obtain download link for `{file_name}`.")
         return
 
-    dest = ws_dir / file_name
+    # Same collision handling as the web upload endpoint: report.csv ->
+    # report-1.csv, ... so a Telegram upload can't silently overwrite a
+    # dataset already in data/.
+    dest = data_dir / file_name
+    n = 1
+    while dest.exists():
+        dest = data_dir / f"{dest.stem}-{n}{dest.suffix}"
+        n += 1
+    file_name = dest.name
 
     def _download():
         req = urllib.request.Request(url, headers={"User-Agent": "ds-agent/0.1"})
@@ -800,17 +811,17 @@ async def _handle_document_upload(api: TelegramAPI, chat_id: int, user_id: int, 
         f"📁 *Uploaded file saved to workspace:*\n"
         f"• *File:* `{file_name}` ({size_str})\n"
         f"• *Session:* `{sid[:8]}`\n"
-        f"• *Path in agent:* `{file_name}`"
+        f"• *Path in agent:* `data/{file_name}`"
     )
     await api.send_message(chat_id, notification)
 
     # If the user included a caption with the file, send it as the prompt to analyze the file
     prompt = caption.strip()
     if prompt:
-        user_prompt = f"I uploaded `{file_name}` to your workspace. {prompt}"
+        user_prompt = f"I uploaded `data/{file_name}` to your workspace. {prompt}"
         asyncio.create_task(_run_agent_turn_for_telegram(api, chat_id, user_prompt))
     else:
-        user_prompt = f"I have uploaded `{file_name}` to your workspace. Please examine this file and summarize its structure and contents."
+        user_prompt = f"I have uploaded `data/{file_name}` to your workspace. Please examine this file and summarize its structure and contents."
         asyncio.create_task(_run_agent_turn_for_telegram(api, chat_id, user_prompt))
 
 
