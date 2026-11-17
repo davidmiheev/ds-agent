@@ -2,19 +2,12 @@
   "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "/tmp"
-      ],
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
       "timeout": 15000
     },
     "colab": {
       "command": "${ROOT}/src/colab_mcp/.venv/bin/python",
-      "args": [
-        "-m",
-        "colab_mcp.colab_server"
-      ],
+      "args": ["-m", "colab_mcp.colab_server"],
       "timeout": 120000,
       "env": {
         "PYTHONPATH": "${ROOT}/src"
@@ -22,10 +15,7 @@
     },
     "research": {
       "command": "${ROOT}/.venv/bin/python",
-      "args": [
-        "-m",
-        "research_mcp.server"
-      ],
+      "args": ["-m", "research_mcp.server"],
       "timeout": 90000,
       "env": {
         "PYTHONPATH": "${ROOT}/src"
@@ -33,10 +23,7 @@
     },
     "ds": {
       "command": "${ROOT}/.venv/bin/python",
-      "args": [
-        "-m",
-        "ds_mcp.server"
-      ],
+      "args": ["-m", "ds_mcp.server"],
       "timeout": 600000,
       "env": {
         "PYTHONPATH": "${ROOT}/src",
@@ -45,10 +32,7 @@
     },
     "memory": {
       "command": "${ROOT}/.venv/bin/python",
-      "args": [
-        "-m",
-        "ds_agent.agent_mcp"
-      ],
+      "args": ["-m", "ds_agent.agent_mcp"],
       "timeout": 90000,
       "env": {
         "PYTHONPATH": "${ROOT}/src"
@@ -56,10 +40,7 @@
     },
     "kaggle": {
       "command": "${ROOT}/.venv/bin/python",
-      "args": [
-        "-m",
-        "ds_agent.kaggle_mcp"
-      ],
+      "args": ["-m", "ds_agent.kaggle_mcp"],
       "timeout": 120000,
       "env": {
         "PYTHONPATH": "${ROOT}/src",
@@ -68,10 +49,7 @@
     },
     "vast": {
       "command": "${ROOT}/.venv/bin/python",
-      "args": [
-        "-m",
-        "vast_mcp.server"
-      ],
+      "args": ["-m", "vast_mcp.server"],
       "timeout": 240000,
       "env": {
         "PYTHONPATH": "${ROOT}/src",
