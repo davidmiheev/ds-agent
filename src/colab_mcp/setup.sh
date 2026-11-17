@@ -23,11 +23,17 @@ fi
 PY="$VENV/bin/python"
 
 echo "==> cloning google-colab-cli if needed"
-CLONE_DIR="${COLAB_CLI_SRC:-/tmp/google-colab-cli}"
+CLONE_DIR="${COLAB_CLI_SRC:-$VENV/google-colab-cli}"
+COLAB_CLI_REV="${COLAB_CLI_REV:-4025416a03361d2ff34d06a4523ae76ce4c9bbaf}"
 if [ ! -d "$CLONE_DIR" ]; then
     echo "    cloning to $CLONE_DIR"
     git clone --depth 1 https://github.com/googlecolab/google-colab-cli "$CLONE_DIR"
 fi
+git -C "$CLONE_DIR" diff --quiet
+git -C "$CLONE_DIR" diff --cached --quiet
+git -C "$CLONE_DIR" fetch --depth 1 origin "$COLAB_CLI_REV"
+git -C "$CLONE_DIR" checkout --detach FETCH_HEAD
+echo "    google-colab-cli revision: $(git -C "$CLONE_DIR" rev-parse HEAD)"
 
 echo "==> installing google-colab-cli and runtime dependencies via uv"
 # NOTE: colab_server.py uses the MCP 1.x API (Server + @server.list_tools()).

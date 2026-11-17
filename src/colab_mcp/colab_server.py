@@ -62,6 +62,11 @@ for _k in list(os.environ):
 os.environ.setdefault("HOME", str(Path.home()))
 os.makedirs(os.path.dirname(TOKEN_CONFIG_PATH), exist_ok=True)
 
+# AuthorizedSession.request defaults to timeout=120; Colab allocations (GPU/TPU
+# or a busy pool) can outlive that and colab_cli's _issue_request only raises
+# the ceiling via this env var — set a sane default before any client exists.
+os.environ.setdefault("COLAB_CLI_REQUEST_TIMEOUT", "300")
+
 LOG = logging.getLogger("colab-mcp")
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 
@@ -70,7 +75,10 @@ logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 # 3600s, independent of how long the underlying runtime itself stays up.
 # Refresh a bit before the deadline so an execute call never races expiry.
 _TOKEN_REFRESH_MARGIN_S = 60
-_WARMUP_TIMEOUT_S = 10
+# First exec on a fresh kernel: websocket connect + kernel boot + first iopub.
+# jupyter_kernel_client's timeout shrinks per poll iteration, so 10s cold
+# starts can spuriously fail; 60s is still far below any real hang.
+_WARMUP_TIMEOUT_S = 60
 _runtime_lock = threading.Lock()
 
 # The pending OAuth flow's PKCE verifier is also persisted here (0600) so a
@@ -717,7 +725,7 @@ def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                 "    print('STDERR:', r.stderr[-2000:], file=sys.stderr)\n"
                 "    raise SystemExit(r.returncode)\n"
             )
-            return _call_tool("colab_execute", {"code": code, "timeout": 300})
+            return _call_tool("colab_execute", {"code": code, "timeout": 600})
 
         if name == "colab_stop":
             s = _active_session()
@@ -725,6 +733,7 @@ def _call_tool(name: str, arguments: dict) -> list[types.ContentBlock]:
                 return [types.TextContent(type="text", text="No active session.")]
             try:
                 _drop_runtime()
+                _get_client().unassign(s.endpoint)
                 _state["store"].remove(s.name)
             except Exception as e:
                 return [types.TextContent(type="text", text=f"Error stopping: {e}")]
